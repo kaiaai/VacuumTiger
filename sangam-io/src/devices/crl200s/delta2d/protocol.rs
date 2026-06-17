@@ -354,13 +354,25 @@ impl Delta2DPacketReader {
         }
 
         // Byte 0: Motor speed indicator (ignored)
-        // Bytes 1-2: Offset angle (angle increment between points) (BE) * 0.01 degrees
+        // Bytes 1-2: Offset angle field (BE) - may not be reliable on all LiDAR models
         // Bytes 3-4: Start angle (BE) * 0.01 degrees
         let offset_angle_raw = ((payload[1] as u16) << 8) | (payload[2] as u16);
         let start_angle_raw = ((payload[3] as u16) << 8) | (payload[4] as u16);
 
-        // Convert offset angle to degrees (angle increment between consecutive points)
-        let angle_increment_deg = offset_angle_raw as f32 * 0.01;
+        // Count samples in this packet
+        let sample_count = (payload.len() - 5) / 3;
+
+        // Compute angle increment between consecutive points
+        // The offset_angle field works on some LiDAR models (e.g., Delta-2D) but not
+        // others (e.g., LDS08RR where it's 0xFFF5). Use the field if it gives a
+        // reasonable value, otherwise fall back to the standard formula:
+        // increment = 360 / (16 * sample_count) — 16 packets per revolution.
+        let offset_deg = offset_angle_raw as f32 * 0.01;
+        let angle_increment_deg = if sample_count > 0 && (offset_deg > 10.0 || offset_deg < 0.01) {
+            360.0 / (16.0 * sample_count as f32)
+        } else {
+            offset_deg
+        };
 
         // Parse measurement points (3 bytes each)
         let mut i = 5;

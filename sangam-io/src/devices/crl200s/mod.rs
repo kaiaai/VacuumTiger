@@ -2,7 +2,7 @@
 //!
 //! This driver manages two subcomponents:
 //! - **GD32**: Motor controller (wheels, brushes, vacuum) via `/dev/ttyS3`
-//! - **Delta2D**: Lidar sensor via `/dev/ttyS1`
+//! - **Revo LDS**: Lidar sensor via `/dev/ttyS1`
 //!
 //! # Sensor Groups Published
 //!
@@ -21,13 +21,15 @@
 //! - `version_string`: GD32 firmware version (String)
 //! - `version_code`: Numeric version code (I32)
 //!
-//! ## `lidar` (5Hz from Delta2D)
+//! ## `lidar` (5Hz from Revo LDS)
 //! Published on topic `sensors/lidar`. Contains 360-degree scan:
 //! - `scan`: PointCloud2D with (angle_rad, distance_m, quality) tuples
+//! - `rpm`: Lidar motor speed in RPM
 
 pub mod constants;
 pub mod delta2d;
 pub mod gd32;
+pub mod revo_lds;
 
 use crate::config::DeviceConfig;
 use crate::core::driver::{DeviceDriver, DriverInitResult};
@@ -38,7 +40,7 @@ use gd32::GD32Driver;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// CRL-200S device driver coordinating GD32 motor controller and Delta2D lidar.
+/// CRL-200S device driver coordinating GD32 motor controller and Delta-2D lidar.
 pub struct CRL200SDriver {
     config: DeviceConfig,
     /// Motor controller - `None` before `initialize()`, `Some` after
@@ -101,12 +103,12 @@ impl DeviceDriver for CRL200SDriver {
         sensor_data.insert("device_version".to_string(), version_data.clone());
         log::debug!("Created sensor group 'device_version' (GD32 firmware version)");
 
-        // Create lidar sensor group (5Hz scan data)
-        // Contains: scan (PointCloud2D)
+        // Create lidar sensor group (5Hz scan data from Revo LDS)
+        // Contains: scan (PointCloud2D), rpm (F32)
         let lidar_group = SensorGroupData::new("lidar");
         let lidar_data = Arc::new(Mutex::new(lidar_group));
         sensor_data.insert("lidar".to_string(), lidar_data.clone());
-        log::debug!("Created sensor group 'lidar' (360° point cloud @ 5Hz)");
+        log::debug!("Created sensor group 'lidar' (Revo LDS 360° point cloud @ 5Hz)");
 
         // Initialize GD32 motor controller
         let mut gd32 = GD32Driver::new(

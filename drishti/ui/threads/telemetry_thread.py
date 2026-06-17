@@ -30,7 +30,7 @@ from proto import sangamio_pb2
 logger = logging.getLogger(__name__)
 
 # Default ports
-UDP_SENSOR_PORT = 5556  # UDP unicast for sensor data
+UDP_SENSOR_PORT = 5555  # UDP unicast for sensor data
 TCP_COMMAND_PORT = 5555  # TCP for commands + UDP registration
 
 
