@@ -36,11 +36,18 @@ pub struct ComponentState {
     pub linear_velocity: AtomicI16,
     pub angular_velocity: AtomicI16,
     pub wheel_motor_enabled: AtomicBool,
+    /// Velocity calibration scales (device units per m/s and per rad/s).
+    /// Set once from config at init; read-only thereafter.
+    pub linear_velocity_scale: f32,
+    pub angular_velocity_scale: f32,
 }
 
+/// Default velocity scale (reference robot): device units per m/s and per rad/s.
+const DEFAULT_VELOCITY_SCALE: f32 = 523.0;
+
 impl ComponentState {
-    /// Create a new ComponentState with custom initial lidar PWM
-    pub fn new(lidar_pwm: u8) -> Self {
+    /// Create a new ComponentState with custom initial lidar PWM and velocity scales
+    pub fn new(lidar_pwm: u8, linear_velocity_scale: f32, angular_velocity_scale: f32) -> Self {
         Self {
             vacuum: AtomicU8::new(0),
             main_brush: AtomicU8::new(0),
@@ -52,6 +59,8 @@ impl ComponentState {
             linear_velocity: AtomicI16::new(0),
             angular_velocity: AtomicI16::new(0),
             wheel_motor_enabled: AtomicBool::new(false),
+            linear_velocity_scale,
+            angular_velocity_scale,
         }
     }
 
@@ -101,10 +110,15 @@ impl ComponentState {
     pub fn get_lidar_pwm(&self) -> u8 {
         self.lidar_pwm.load(Ordering::Relaxed)
     }
+
+    /// Get velocity calibration scales (linear units per m/s, angular units per rad/s).
+    pub fn get_velocity_scales(&self) -> (f32, f32) {
+        (self.linear_velocity_scale, self.angular_velocity_scale)
+    }
 }
 
 impl Default for ComponentState {
     fn default() -> Self {
-        Self::new(DEFAULT_LIDAR_PWM)
+        Self::new(DEFAULT_LIDAR_PWM, DEFAULT_VELOCITY_SCALE, DEFAULT_VELOCITY_SCALE)
     }
 }

@@ -363,10 +363,35 @@ pub struct HardwareConfig {
     /// **Optional**: Yes (defaults to CRL-200S values)
     #[serde(default)]
     pub lidar_mounting: LidarMountingConfig,
+
+    /// Linear velocity scale: GD32 device units per 1 m/s.
+    ///
+    /// Converts commanded linear velocity (m/s) to motor device units. Calibrate
+    /// per robot: command a known speed, measure the actual speed, and set
+    /// scale = old_scale * commanded / actual.
+    /// **Default**: 523.0 (reference robot)
+    #[serde(default = "default_linear_velocity_scale")]
+    pub linear_velocity_scale: f32,
+
+    /// Angular velocity scale: GD32 device units per 1 rad/s.
+    ///
+    /// Converts commanded angular velocity (rad/s) to motor device units.
+    /// Independent of `linear_velocity_scale` (different units). Calibrate per robot.
+    /// **Default**: 523.0 (reference robot)
+    #[serde(default = "default_angular_velocity_scale")]
+    pub angular_velocity_scale: f32,
 }
 
 fn default_lidar_pwm() -> u8 {
     60
+}
+
+fn default_linear_velocity_scale() -> f32 {
+    523.0
+}
+
+fn default_angular_velocity_scale() -> f32 {
+    523.0
 }
 
 /// Device configuration

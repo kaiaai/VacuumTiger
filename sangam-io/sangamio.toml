@@ -35,6 +35,14 @@ heartbeat_interval_ms = 20
 # Default: 60 (provides ~330 RPM / 5.5 Hz scan rate)
 lidar_pwm = 60
 
+# Velocity calibration: GD32 device units per 1 m/s (linear) and per 1 rad/s (angular).
+# These are independent (different units) and robot-specific. Calibrate each:
+#   command a known velocity, measure the actual velocity, then
+#   new_scale = old_scale * commanded / actual
+# Defaults (if omitted) are 523.0 each (reference robot).
+linear_velocity_scale = 1726.0    # Proscenic M6 Pro (calibrate to taste; ~523*3.3)
+angular_velocity_scale = 523.0    # calibrate separately if rotation speed is off
+
 # Lidar mounting configuration
 # Defines the physical mounting position of the lidar relative to robot center.
 # SangamIO uses this to transform lidar measurements to robot-centered coordinates

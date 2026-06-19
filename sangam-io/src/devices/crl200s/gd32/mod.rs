@@ -101,7 +101,15 @@ impl GD32Driver {
     /// - `port_path`: Serial port path (e.g., "/dev/ttyS3")
     /// - `heartbeat_interval_ms`: Interval for heartbeat commands (20-50ms)
     /// - `lidar_pwm`: Initial PWM value for lidar motor (0-100%)
-    pub fn new(port_path: &str, heartbeat_interval_ms: u64, lidar_pwm: u8) -> Result<Self> {
+    /// - `linear_velocity_scale`: device units per m/s (velocity calibration)
+    /// - `angular_velocity_scale`: device units per rad/s (velocity calibration)
+    pub fn new(
+        port_path: &str,
+        heartbeat_interval_ms: u64,
+        lidar_pwm: u8,
+        linear_velocity_scale: f32,
+        angular_velocity_scale: f32,
+    ) -> Result<Self> {
         let port = serialport::new(port_path, 115200)
             .timeout(Duration::from_millis(SERIAL_READ_TIMEOUT_MS))
             .open()
@@ -120,7 +128,11 @@ impl GD32Driver {
             shutdown: Arc::new(AtomicBool::new(false)),
             heartbeat_handle: None,
             reader_handle: None,
-            component_state: Arc::new(ComponentState::new(lidar_pwm)),
+            component_state: Arc::new(ComponentState::new(
+                lidar_pwm,
+                linear_velocity_scale,
+                angular_velocity_scale,
+            )),
         })
     }
 

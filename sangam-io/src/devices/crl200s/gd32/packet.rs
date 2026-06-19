@@ -83,7 +83,8 @@ impl TxPacket {
     ///
     /// Linear: forward/backward speed (empirical units, positive = forward)
     /// Angular: rotation speed (empirical units, positive = counter-clockwise)
-    /// Note: Units are converted from m/s and rad/s using VELOCITY_TO_DEVICE_UNITS (523)
+    /// Note: callers convert m/s and rad/s to these units using the per-robot
+    /// linear_velocity_scale / angular_velocity_scale from sangamio.toml.
     #[inline]
     pub fn set_velocity(&mut self, linear: i16, angular: i16) {
         self.data[2] = 11; // LEN = cmd(1) + payload(8) + crc(2)

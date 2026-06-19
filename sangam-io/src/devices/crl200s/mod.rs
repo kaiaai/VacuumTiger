@@ -115,6 +115,8 @@ impl DeviceDriver for CRL200SDriver {
             &hardware.gd32_port,
             hardware.heartbeat_interval_ms,
             hardware.lidar_pwm,
+            hardware.linear_velocity_scale,
+            hardware.angular_velocity_scale,
         )?;
 
         // Send initialization sequence

@@ -49,12 +49,6 @@ use std::sync::{Arc, Mutex};
 // Constants
 // ============================================================================
 
-/// Conversion factor from m/s or rad/s to GD32 velocity units.
-///
-/// Empirically calibrated: commanded 0.35 rad/s resulted in 0.669 rad/s actual,
-/// so the correction factor is 1000 / 1.91 ≈ 523.
-const VELOCITY_TO_DEVICE_UNITS: f32 = 523.0;
-
 /// Default IMU calibration payload observed in R2D logs
 const IMU_DEFAULT_PAYLOAD: [u8; 4] = [0x10, 0x0E, 0x00, 0x00];
 
@@ -381,12 +375,14 @@ fn handle_drive(
             emergency_stop(port, component_state, pkt)
         }
         ComponentAction::Configure { config } => {
+            // Velocity calibration scales (device units per m/s and per rad/s), from config.
+            let (linear_scale, angular_scale) = component_state.get_velocity_scales();
             // Check for velocity mode (linear + angular) - continuous
             if let (Some(SensorValue::F32(linear)), Some(SensorValue::F32(angular))) =
                 (config.get("linear"), config.get("angular"))
             {
-                let linear_units = (linear * VELOCITY_TO_DEVICE_UNITS) as i16;
-                let angular_units = (angular * VELOCITY_TO_DEVICE_UNITS) as i16;
+                let linear_units = (linear * linear_scale) as i16;
+                let angular_units = (angular * angular_scale) as i16;
                 // Store velocity for heartbeat to send continuously
                 component_state
                     .linear_velocity
@@ -408,8 +404,8 @@ fn handle_drive(
             if let (Some(SensorValue::F32(left)), Some(SensorValue::F32(right))) =
                 (config.get("left"), config.get("right"))
             {
-                let left_units = (left * VELOCITY_TO_DEVICE_UNITS) as i16;
-                let right_units = (right * VELOCITY_TO_DEVICE_UNITS) as i16;
+                let left_units = (left * linear_scale) as i16;
+                let right_units = (right * linear_scale) as i16;
                 log::debug!(
                     "Drive tank: left={:.3} m/s ({} units), right={:.3} m/s ({} units)",
                     left,
