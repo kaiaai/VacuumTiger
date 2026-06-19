@@ -14,7 +14,7 @@ use sangam_io::devices::create_device;
 use sangam_io::error::{Error, Result};
 use sangam_io::streaming::{TcpReceiver, UdpClientRegistry, UdpPublisher, create_serializer};
 use std::env;
-use std::net::{Shutdown, SocketAddr, TcpListener, UdpSocket};
+use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -120,6 +120,10 @@ fn main() -> Result<()> {
     // Updated when TCP clients connect/disconnect
     let udp_client_registry: UdpClientRegistry = Arc::new(Mutex::new(None));
 
+    // Tracks the alive-flag of the currently-active TCP connection, so a new
+    // connection can signal the previous (possibly stale) one to stop and take over.
+    let current_conn: Arc<Mutex<Option<Arc<AtomicBool>>>> = Arc::new(Mutex::new(None));
+
     // Spawn single UDP publisher thread (unicast to registered client)
     let udp_serializer = create_serializer();
     let udp_sensor_data = sensor_data.clone();
@@ -161,41 +165,46 @@ fn main() -> Result<()> {
     while running.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((stream, addr)) => {
-                // Check if we already have an active client (UDP registry doubles as client tracker)
-                let should_accept = {
+                let udp_addr = SocketAddr::new(addr.ip(), udp_streaming_port);
+
+                // Last-connection-wins: instead of rejecting a new client when one
+                // is already registered, drop the previous (possibly stale) client
+                // and let this new connection take over. A stale half-open client
+                // would otherwise block every reconnect until it timed out.
+                let conn_alive = Arc::new(AtomicBool::new(true));
+                {
+                    let mut cur = current_conn.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(old) = cur.take() {
+                        old.store(false, Ordering::Relaxed); // signal old receiver to stop
+                        log::info!(
+                            "Replacing previous client with new connection from {}",
+                            addr
+                        );
+                    }
+                    *cur = Some(Arc::clone(&conn_alive));
+                }
+                {
                     let mut registry = udp_client_registry
                         .lock()
                         .unwrap_or_else(|e| e.into_inner());
-                    if registry.is_some() {
-                        log::warn!(
-                            "Rejecting TCP connection from {}: already have active client {:?}",
-                            addr,
-                            *registry
-                        );
-                        false
-                    } else {
-                        // Register client for UDP streaming (client_ip:udp_streaming_port)
-                        let udp_addr = SocketAddr::new(addr.ip(), udp_streaming_port);
-                        *registry = Some(udp_addr);
-                        log::info!(
-                            "TCP client connected: {} (UDP streaming -> {})",
-                            addr,
-                            udp_addr
-                        );
-                        true
-                    }
-                };
-
-                if !should_accept {
-                    // Close the rejected connection
-                    let _ = stream.shutdown(Shutdown::Both);
-                    continue;
+                    *registry = Some(udp_addr);
                 }
+                log::info!(
+                    "TCP client connected: {} (UDP streaming -> {})",
+                    addr,
+                    udp_addr
+                );
 
                 // Set socket to blocking mode for reliable command handling
                 if let Err(e) = stream.set_nonblocking(false) {
                     log::error!("Failed to set socket to blocking mode: {}", e);
-                    // Clear UDP registry on error
+                    conn_alive.store(false, Ordering::Relaxed);
+                    {
+                        let mut cur = current_conn.lock().unwrap_or_else(|e| e.into_inner());
+                        if cur.as_ref().map(|c| Arc::ptr_eq(c, &conn_alive)).unwrap_or(false) {
+                            *cur = None;
+                        }
+                    }
                     if let Ok(mut guard) = udp_client_registry.lock() {
                         *guard = None;
                     }
@@ -207,27 +216,41 @@ fn main() -> Result<()> {
                 let recv_serializer = create_serializer();
                 let recv_running = Arc::clone(&running);
                 let registry_clone = Arc::clone(&udp_client_registry);
+                let current_conn_clone = Arc::clone(&current_conn);
+                let conn_alive_recv = Arc::clone(&conn_alive);
 
                 // Spawn receiver thread (commands only - no publisher needed)
                 let _recv_handle = thread::Builder::new()
                     .name("tcp-receiver".to_string())
                     .spawn(move || {
-                        // Create a simple alive flag for this connection
-                        let conn_alive = Arc::new(AtomicBool::new(true));
                         let mut receiver = TcpReceiver::new(
                             recv_serializer,
                             driver_clone,
                             recv_running,
-                            conn_alive,
+                            conn_alive_recv,
                         );
                         if let Err(e) = receiver.run(stream) {
                             log::error!("TCP receiver error: {}", e);
                         }
                         log::info!("TCP client disconnected: {}", addr);
 
-                        // Unregister client from UDP streaming
-                        if let Ok(mut guard) = registry_clone.lock() {
-                            *guard = None;
+                        // Only unregister if this is still the active connection
+                        // (a newer connection may have already taken over).
+                        let still_current = {
+                            let mut cur = current_conn_clone
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
+                            if cur.as_ref().map(|c| Arc::ptr_eq(c, &conn_alive)).unwrap_or(false) {
+                                *cur = None;
+                                true
+                            } else {
+                                false
+                            }
+                        };
+                        if still_current {
+                            if let Ok(mut guard) = registry_clone.lock() {
+                                *guard = None;
+                            }
                         }
                     });
             }
