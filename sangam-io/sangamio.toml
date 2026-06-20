@@ -40,7 +40,7 @@ lidar_pwm = 60
 #   command a known velocity, measure the actual velocity, then
 #   new_scale = old_scale * commanded / actual
 # Defaults (if omitted) are 523.0 each (reference robot).
-linear_velocity_scale = 1726.0    # Proscenic M6 Pro (calibrate to taste; ~523*3.3)
+linear_velocity_scale = 5400.0    # Proscenic M6 Pro (calibrate to taste; ~523*3.3)
 angular_velocity_scale = 523.0    # calibrate separately if rotation speed is off
 
 # Lidar mounting configuration
