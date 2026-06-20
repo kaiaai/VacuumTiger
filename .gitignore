@@ -4,7 +4,6 @@
 Cargo.lock
 **/*.rs.bk
 *.pdb
-.cargo
 
 # IDE
 .vscode/
