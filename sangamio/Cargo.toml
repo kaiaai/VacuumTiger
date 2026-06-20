@@ -1,5 +1,5 @@
 [package]
-name = "sangam-io"
+name = "sangamio"
 version = "0.3.0"
 edition = "2024"
 description = "Hardware abstraction daemon for robot vacuum"
