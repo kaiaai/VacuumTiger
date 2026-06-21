@@ -8,11 +8,11 @@
 //! When a TCP client connects for commands, their IP is automatically registered
 //! for UDP sensor streaming. This eliminates network flooding from broadcasts.
 
-use sangam_io::config::Config;
-use sangam_io::core::types::Command;
-use sangam_io::devices::create_device;
-use sangam_io::error::{Error, Result};
-use sangam_io::streaming::{
+use sangamio::config::Config;
+use sangamio::core::types::Command;
+use sangamio::devices::create_device;
+use sangamio::error::{Error, Result};
+use sangamio::streaming::{
     TcpReceiver, Transport, UdpClientRegistry, UdpPublisher, create_serializer,
 };
 use std::env;
