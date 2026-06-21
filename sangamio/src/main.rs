@@ -12,9 +12,11 @@ use sangam_io::config::Config;
 use sangam_io::core::types::Command;
 use sangam_io::devices::create_device;
 use sangam_io::error::{Error, Result};
-use sangam_io::streaming::{TcpReceiver, UdpClientRegistry, UdpPublisher, create_serializer};
+use sangam_io::streaming::{
+    TcpReceiver, Transport, UdpClientRegistry, UdpPublisher, create_serializer,
+};
 use std::env;
-use std::net::{SocketAddr, TcpListener, UdpSocket};
+use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -124,11 +126,20 @@ fn main() -> Result<()> {
     // connection can signal the previous (possibly stale) one to stop and take over.
     let current_conn: Arc<Mutex<Option<Arc<AtomicBool>>>> = Arc::new(Mutex::new(None));
 
+    // Telemetry transport for the current client (UDP default), plus a write-clone
+    // of its TCP socket. Lets a NAT'd/remote client fall back from UDP to TCP
+    // telemetry: the bridge requests it via the reserved "telemetry" command, the
+    // TcpReceiver flips this flag, and the UdpPublisher writes frames into the socket.
+    let telemetry_transport: Arc<Mutex<Transport>> = Arc::new(Mutex::new(Transport::Udp));
+    let tcp_writer: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
+
     // Spawn single UDP publisher thread (unicast to registered client)
     let udp_serializer = create_serializer();
     let udp_sensor_data = sensor_data.clone();
     let udp_running = Arc::clone(&running);
     let udp_registry_clone = Arc::clone(&udp_client_registry);
+    let udp_transport = Arc::clone(&telemetry_transport);
+    let udp_tcp_writer = Arc::clone(&tcp_writer);
     let _udp_handle = thread::Builder::new()
         .name("udp-publisher".to_string())
         .spawn(move || {
@@ -139,6 +150,8 @@ fn main() -> Result<()> {
                 stream_receivers, // UDP gets ownership of streaming channels
                 udp_running,
                 udp_registry_clone,
+                udp_transport,
+                udp_tcp_writer,
             );
             if let Err(e) = publisher.run() {
                 log::error!("UDP publisher error: {}", e);
@@ -211,6 +224,21 @@ fn main() -> Result<()> {
                     continue;
                 }
 
+                // Stash a write-clone of the socket so the publisher can stream
+                // telemetry over TCP if this client falls back from UDP. The new
+                // client always starts on UDP (the low-latency fast path). The write
+                // timeout keeps a wedged remote from freezing the 110Hz publisher.
+                match stream.try_clone() {
+                    Ok(w) => {
+                        let _ = w.set_write_timeout(Some(std::time::Duration::from_millis(200)));
+                        *tcp_writer.lock().unwrap_or_else(|e| e.into_inner()) = Some(w);
+                    }
+                    Err(e) => log::warn!("Failed to clone stream for TCP telemetry: {}", e),
+                }
+                *telemetry_transport
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Transport::Udp;
+
                 // Clone resources for receiver thread
                 let driver_clone = Arc::clone(&driver);
                 let recv_serializer = create_serializer();
@@ -218,6 +246,9 @@ fn main() -> Result<()> {
                 let registry_clone = Arc::clone(&udp_client_registry);
                 let current_conn_clone = Arc::clone(&current_conn);
                 let conn_alive_recv = Arc::clone(&conn_alive);
+                let recv_transport = Arc::clone(&telemetry_transport);
+                let cleanup_tcp_writer = Arc::clone(&tcp_writer);
+                let cleanup_transport = Arc::clone(&telemetry_transport);
 
                 // Spawn receiver thread (commands only - no publisher needed)
                 let _recv_handle = thread::Builder::new()
@@ -228,6 +259,7 @@ fn main() -> Result<()> {
                             driver_clone,
                             recv_running,
                             conn_alive_recv,
+                            recv_transport,
                         );
                         if let Err(e) = receiver.run(stream) {
                             log::error!("TCP receiver error: {}", e);
@@ -251,6 +283,11 @@ fn main() -> Result<()> {
                             if let Ok(mut guard) = registry_clone.lock() {
                                 *guard = None;
                             }
+                            // Stop streaming telemetry into the now-dead socket and
+                            // reset for the next client (which starts on UDP).
+                            *cleanup_tcp_writer.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                            *cleanup_transport.lock().unwrap_or_else(|e| e.into_inner()) =
+                                Transport::Udp;
                         }
                     });
             }

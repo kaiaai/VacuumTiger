@@ -77,3 +77,16 @@ pub mod wire;
 pub use tcp_receiver::TcpReceiver;
 pub use udp_publisher::{UdpClientRegistry, UdpPublisher};
 pub use wire::create_serializer;
+
+/// Which transport carries sensor telemetry to the current client.
+///
+/// UDP unicast is the low-latency default (see module docs). TCP is a fallback
+/// for clients behind NAT / operating remotely, where the robot's UDP packets
+/// can't get back to the client but the already-open TCP command connection can.
+/// Selected per-client at runtime: a client requests the switch via the reserved
+/// `"telemetry"` `ComponentControl` command (Enable = TCP, Disable = UDP).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Transport {
+    Udp,
+    Tcp,
+}

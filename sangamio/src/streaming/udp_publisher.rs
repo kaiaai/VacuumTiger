@@ -70,12 +70,22 @@
 use crate::core::types::{SensorGroupData, StreamReceiver};
 use crate::error::Result;
 use crate::streaming::wire::Serializer;
+use crate::streaming::Transport;
 use crossbeam_channel::TryRecvError;
 use std::collections::HashMap;
-use std::net::{SocketAddr, UdpSocket};
+use std::io::Write;
+use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// Shared handle to the current client's TCP socket (a write-clone), used to send
+/// telemetry when the client has fallen back to TCP. `None` when no client is
+/// connected. Set/cleared by the accept loop in `main.rs`.
+pub type TcpWriter = Arc<Mutex<Option<TcpStream>>>;
+
+/// Shared selected telemetry transport for the current client.
+pub type TransportSel = Arc<Mutex<Transport>>;
 
 /// Type alias for UDP client registry (single client at a time)
 pub type UdpClientRegistry = Arc<Mutex<Option<SocketAddr>>>;
@@ -96,10 +106,15 @@ pub struct UdpPublisher {
     running: Arc<AtomicBool>,
     /// Client registry - current registered client for UDP streaming
     client_registry: UdpClientRegistry,
+    /// Selected telemetry transport (UDP default, TCP fallback for NAT/remote)
+    transport: TransportSel,
+    /// Write handle to the current client's TCP socket, used when transport == Tcp
+    tcp_writer: TcpWriter,
 }
 
 impl UdpPublisher {
     /// Create a new UDP publisher
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         socket: UdpSocket,
         serializer: Serializer,
@@ -107,6 +122,8 @@ impl UdpPublisher {
         stream_receivers: HashMap<String, StreamReceiver>,
         running: Arc<AtomicBool>,
         client_registry: UdpClientRegistry,
+        transport: TransportSel,
+        tcp_writer: TcpWriter,
     ) -> Self {
         Self {
             socket,
@@ -115,6 +132,8 @@ impl UdpPublisher {
             stream_receivers,
             running,
             client_registry,
+            transport,
+            tcp_writer,
         }
     }
 
@@ -255,10 +274,11 @@ impl UdpPublisher {
         Ok(())
     }
 
-    /// Send a sensor group via UDP unicast to specific client
+    /// Send a sensor group to the current client over the selected transport.
     ///
-    /// Uses same wire format as TCP for client compatibility:
-    /// [4-byte length prefix (big-endian)] + [protobuf payload]
+    /// Both transports use the same wire format for client compatibility:
+    /// [4-byte length prefix (big-endian)] + [protobuf payload]. UDP is the
+    /// low-latency default; TCP is the fallback for NAT/remote clients.
     ///
     /// Uses provided buffer to avoid allocation per message.
     fn send_sensor_group_with_buffer(
@@ -275,7 +295,21 @@ impl UdpPublisher {
         buffer.extend_from_slice(&len);
         buffer.extend_from_slice(&payload);
 
-        self.socket.send_to(buffer, target)?;
+        match *self.transport.lock().unwrap_or_else(|e| e.into_inner()) {
+            Transport::Udp => {
+                self.socket.send_to(buffer, target)?;
+            }
+            Transport::Tcp => {
+                // Write the identical [len][protobuf] frame into the client's TCP
+                // socket. The write-clone in main.rs carries a write timeout so a
+                // wedged remote can't freeze this (110Hz) loop; a write error is
+                // treated like UDP packet loss (logged by the caller, non-fatal).
+                let mut guard = self.tcp_writer.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(w) = guard.as_mut() {
+                    w.write_all(buffer)?;
+                }
+            }
+        }
 
         Ok(())
     }

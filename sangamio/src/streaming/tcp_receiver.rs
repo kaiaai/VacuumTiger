@@ -54,9 +54,11 @@
 //! - **Graceful shutdown**: Handles both global and per-connection flags
 
 use crate::core::driver::DeviceDriver;
-use crate::core::types::Command;
+use crate::core::types::{Command, ComponentAction};
 use crate::error::{Error, Result};
+use crate::streaming::udp_publisher::TransportSel;
 use crate::streaming::wire::Serializer;
+use crate::streaming::Transport;
 use std::io::Read;
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -70,6 +72,8 @@ pub struct TcpReceiver {
     running: Arc<AtomicBool>,
     /// Per-connection alive flag (connection health)
     conn_alive: Arc<AtomicBool>,
+    /// Selected telemetry transport, flipped by the reserved "telemetry" command
+    transport: TransportSel,
     /// Reusable buffer for reading command payloads (avoids allocation per command)
     read_buffer: Vec<u8>,
 }
@@ -84,12 +88,14 @@ impl TcpReceiver {
         driver: Arc<Mutex<Box<dyn DeviceDriver>>>,
         running: Arc<AtomicBool>,
         conn_alive: Arc<AtomicBool>,
+        transport: TransportSel,
     ) -> Self {
         Self {
             serializer,
             driver,
             running,
             conn_alive,
+            transport,
             // Pre-allocate buffer to avoid allocation on first command
             read_buffer: Vec::with_capacity(INITIAL_BUFFER_CAPACITY),
         }
@@ -194,6 +200,23 @@ impl TcpReceiver {
 
     /// Handle a command
     fn handle_command(&self, cmd: Command) -> Result<()> {
+        // Reserved pseudo-component "telemetry": switch this client's sensor-stream
+        // transport instead of forwarding to the device driver. Enable = TCP (the
+        // NAT/remote fallback), Disable = UDP (the low-latency default). The bridge
+        // sends this when UDP telemetry doesn't arrive.
+        if let Command::ComponentControl { id, action } = &cmd {
+            if id == "telemetry" {
+                let t = if matches!(action, ComponentAction::Enable { .. }) {
+                    Transport::Tcp
+                } else {
+                    Transport::Udp
+                };
+                *self.transport.lock().unwrap_or_else(|e| e.into_inner()) = t;
+                log::info!("Telemetry transport -> {:?}", t);
+                return Ok(());
+            }
+        }
+
         log::trace!("Executing command: {:?}", cmd);
         let mut driver = self.driver.lock().map_err(|_| Error::ThreadPanic)?;
         let result = driver.send_command(cmd);
