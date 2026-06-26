@@ -70,6 +70,7 @@ use crate::core::types::{SensorGroupData, SensorValue};
 use crate::error::{Error, Result};
 use protocol::{Delta2DPacketReader, ParseResult};
 use serialport::SerialPort;
+use std::f32::consts::TAU;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -213,16 +214,20 @@ impl Delta2DDriver {
                                         last_scan_time = Instant::now();
                                     }
 
-                                    // Transform point from lidar frame to robot center frame
-                                    let (new_angle, new_distance) = lidar_mounting
-                                        .transform_to_robot_center(point.angle, point.distance);
-
-                                    // Add transformed point to accumulator
-                                    accumulated_points.push((
-                                        new_angle,
-                                        new_distance,
-                                        point.quality,
-                                    ));
+                                    // Apply only the cheap mounting rotation. The
+                                    // position offset (offset_x/y, optical_offset) is no
+                                    // longer applied here -- the ROS TF tree (URDF
+                                    // base_scan) owns that geometry. This removes ~4 trig
+                                    // ops/point and the double-counting that caused the
+                                    // scan to wobble during rotation.
+                                    let mut a = point.angle + lidar_mounting.angle_offset;
+                                    while a >= TAU {
+                                        a -= TAU;
+                                    }
+                                    while a < 0.0 {
+                                        a += TAU;
+                                    }
+                                    accumulated_points.push((a, point.distance, point.quality));
                                     last_angle = point.angle;
                                 }
 
@@ -309,16 +314,44 @@ impl Delta2DDriver {
         log::info!("Delta-2D reader thread exiting");
     }
 
-    /// Publish accumulated scan to sensor data
+    /// Publish the accumulated scan as a compact packed binary blob.
+    ///
+    /// Instead of inflating each point to protobuf floats (~14 bytes), the scan is
+    /// binned to a fixed grid and packed as raw native values. Wire layout
+    /// (little-endian, ~1082 bytes for 360 bins -- under one MTU, so a scan is
+    /// never IP-fragmented):
+    ///   u16 num_bins
+    ///   per bin: u16 distance (0.25mm units, 0 = no return), u8 quality
+    /// Bin i is angle `i * 2pi / num_bins` (ROS CCW, 0 = forward). The bridge
+    /// converts distance to meters (x0.00025) -- that and all position geometry
+    /// (now ROS TF) are done off the robot.
     fn publish_scan(sensor_data: &Arc<Mutex<SensorGroupData>>, points: &[(f32, f32, u8)]) {
+        const NUM_BINS: usize = 360;
+        let mut dist = [0u16; NUM_BINS];
+        let mut qual = [0u8; NUM_BINS];
+        for &(angle, distance_m, quality) in points {
+            let bin = (angle / TAU * NUM_BINS as f32) as usize % NUM_BINS;
+            // meters -> raw 0.25mm units (the lidar's native resolution; no real loss)
+            let raw = (distance_m * 4000.0).round().clamp(0.0, u16::MAX as f32) as u16;
+            dist[bin] = raw;
+            qual[bin] = quality;
+        }
+
+        let mut buf = Vec::with_capacity(2 + NUM_BINS * 3);
+        buf.extend_from_slice(&(NUM_BINS as u16).to_le_bytes());
+        for i in 0..NUM_BINS {
+            buf.extend_from_slice(&dist[i].to_le_bytes());
+            buf.push(qual[i]);
+        }
+
         let Ok(mut data) = sensor_data.lock() else {
             log::error!("Failed to lock sensor data for lidar scan");
             return;
         };
         data.touch();
-        data.set("scan", SensorValue::PointCloud2D(points.to_vec()));
+        data.set("scan_packed", SensorValue::Bytes(buf));
 
-        log::trace!("Published lidar scan with {} points", points.len());
+        log::trace!("Published packed lidar scan ({} bins)", NUM_BINS);
     }
 
     /// Shutdown the driver
