@@ -380,6 +380,15 @@ pub struct HardwareConfig {
     /// **Default**: 523.0 (reference robot)
     #[serde(default = "default_angular_velocity_scale")]
     pub angular_velocity_scale: f32,
+
+    /// Stop all motors, actuators and the LiDAR when the daemon starts.
+    ///
+    /// The CRL-200S can retain a running motor/LiDAR state across SangamIO
+    /// restarts (and even some reboots), so a previous session may leave things
+    /// moving. Enable to force a known-safe state on launch.
+    /// **Default**: false
+    #[serde(default)]
+    pub safe_start: bool,
 }
 
 fn default_lidar_pwm() -> u8 {

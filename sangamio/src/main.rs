@@ -9,7 +9,7 @@
 //! for UDP sensor streaming. This eliminates network flooding from broadcasts.
 
 use sangamio::config::Config;
-use sangamio::core::types::Command;
+use sangamio::core::types::{Command, ComponentAction};
 use sangamio::devices::create_device;
 use sangamio::error::{Error, Result};
 use sangamio::streaming::{
@@ -82,6 +82,49 @@ fn main() -> Result<()> {
     );
 
     let driver = Arc::new(Mutex::new(driver));
+
+    // Safe start (opt-in via [device.hardware] safe_start): force motors,
+    // actuators and the LiDAR off on launch. The CRL-200S can retain a running
+    // state across restarts, so a previous session may leave things moving.
+    let safe_start = config
+        .device
+        .hardware
+        .as_ref()
+        .map(|h| h.safe_start)
+        .unwrap_or(false);
+    if safe_start {
+        let sd = Arc::clone(&driver);
+        let _ = thread::Builder::new()
+            .name("safe-start".to_string())
+            .spawn(move || {
+                // Retry across the GD32's ~5s wake window so the commands land
+                // even if issued early. Re-stopping is idempotent.
+                for attempt in 1..=3 {
+                    thread::sleep(std::time::Duration::from_secs(2));
+                    let stops = [
+                        ("drive", ComponentAction::Reset { config: None }),
+                        ("lidar", ComponentAction::Disable { config: None }),
+                        ("vacuum", ComponentAction::Disable { config: None }),
+                        ("main_brush", ComponentAction::Disable { config: None }),
+                        ("side_brush", ComponentAction::Disable { config: None }),
+                        ("water_pump", ComponentAction::Disable { config: None }),
+                    ];
+                    if let Ok(mut d) = sd.lock() {
+                        for (id, action) in stops {
+                            let _ = d.send_command(Command::ComponentControl {
+                                id: id.to_string(),
+                                action,
+                            });
+                        }
+                    }
+                    if attempt == 1 {
+                        log::info!(
+                            "safe_start: commanded motors, actuators and LiDAR off"
+                        );
+                    }
+                }
+            });
+    }
 
     // Set up shutdown signal handler
     let running = Arc::new(AtomicBool::new(true));
