@@ -133,7 +133,13 @@ fn mac_suffix(iface: &str) -> Option<String> {
 
 /// Bring the interface up as an access point: static IP, hostapd, dnsmasq.
 fn ap_up(cfg: &WifiConfig) -> Result<()> {
-    // Make sure nothing else owns the radio (station supplicant, a prior AP).
+    // Make sure nothing else owns the radio. On the CRL-200S the stock
+    // `wifiManager` (started by the procd service `robotWifiManager`) owns wlan0
+    // and *spawns* wpa_supplicant, so it must be stopped first or it just
+    // respawns the supplicant and fights us for the interface. Its init script
+    // sets no `respawn`, so a plain kill sticks. All best-effort / no-ops if
+    // absent.
+    let _ = run_quiet("killall", &["wifiManager"]);
     let _ = run_quiet("killall", &["wpa_supplicant"]);
     let _ = run_quiet("killall", &["hostapd"]);
     let _ = run_quiet("killall", &["dnsmasq"]);
