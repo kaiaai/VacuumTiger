@@ -53,8 +53,10 @@ not a ping. Set `force_portal = true` only for testing.
 
 ## What happens
 
-1. **AP up** — kill any supplicant/hostapd/dnsmasq, `ifconfig wlan0 192.168.5.1`,
-   start `hostapd`, start `dnsmasq` (DHCP `192.168.5.50–150`, `address=/#/192.168.5.1`).
+1. **AP up** — kill the stock `wifiManager` (it owns wlan0 and respawns
+   `wpa_supplicant`, so it must go first) plus any supplicant/hostapd/dnsmasq,
+   `ifconfig wlan0 192.168.5.1`, start `hostapd`, start `dnsmasq`
+   (DHCP `192.168.5.50–150`, `address=/#/192.168.5.1`).
 2. **Portal** — zero-dep HTTP server on `:80`. Serves the form at `/`, answers the
    OS captive probes (`/generate_204`, `/hotspot-detect.html`, `/connecttest.txt`, …)
    with a 302 to the form so the phone's "Sign in to network" sheet appears.
@@ -89,7 +91,13 @@ Linux must be running), then:
 ### If something's off
 - **No `hostapd`/`dnsmasq`/`iw`** — confirm they still exist on the image
   (`which hostapd dnsmasq wpa_supplicant udhcpc`). They're in the stock ROM.
-- **AP never appears** — the stock `robotWifiManager` init script may be fighting
-  for `wlan0`; disable it (as with `AuxCtrl`).
+- **AP never appears** — the stock `wifiManager` (procd service `robotWifiManager`)
+  owns `wlan0`. SangamIO `killall`s it when bringing up the AP, but for a permanent
+  install disable it so it doesn't restart at boot: `/etc/init.d/robotWifiManager
+  disable`. NOTE: with `wifiManager` disabled, SangamIO does not (yet) bring up
+  station mode on the *already-provisioned* path — it assumes the network is
+  already up. Until that's added, either leave `wifiManager` enabled (coexist mode:
+  it does normal station bring-up; use the portal only as a manual setup tool with
+  `force_portal`) or bring the station up by other means.
 - **Joins but no lease** — raise `connect_timeout_secs`; check `udhcpc` flags match
   the on-device BusyBox (`-n -q -t`).
