@@ -604,11 +604,99 @@ impl NetworkConfig {
     }
 }
 
+// ============================================================================
+// WiFi Provisioning Configuration
+// ============================================================================
+
+/// WiFi provisioning configuration.
+///
+/// When enabled *and* the robot has no configured WiFi network, SangamIO brings
+/// up a temporary access point serving a captive-portal web page, so the user can
+/// enter their home SSID/password from a phone browser -- replacing the manual
+/// ADB + `wpa_supplicant.conf` editing flow.
+///
+/// This is a **mode switch**: the radio is either in AP mode (provisioning) or
+/// station mode (normal operation), never both at once. If a network is already
+/// configured (an ADB-provisioned robot), provisioning is skipped entirely, so
+/// existing deployments are unaffected. See `src/wifi/mod.rs` and
+/// `docs/wifi-provisioning.md`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WifiConfig {
+    /// Master switch. When false (the default when the `[wifi]` section is
+    /// absent), SangamIO never touches WiFi at all.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// WiFi interface name (e.g. "wlan0").
+    #[serde(default = "default_wifi_interface")]
+    pub interface: String,
+
+    /// SSID of the temporary setup access point. A short suffix from the
+    /// interface MAC is appended (e.g. "Proscenic-Setup-9F3A") so several robots
+    /// being set up nearby don't collide.
+    #[serde(default = "default_ap_ssid")]
+    pub ap_ssid: String,
+
+    /// Optional WPA2 passphrase (8-63 chars) for the setup AP. When empty, the
+    /// setup AP is open -- acceptable for a transient, single-purpose network.
+    #[serde(default)]
+    pub ap_password: String,
+
+    /// 2.4 GHz channel for the setup AP.
+    #[serde(default = "default_ap_channel")]
+    pub ap_channel: u8,
+
+    /// Static IPv4 the robot takes while acting as the setup AP; the captive
+    /// portal is served here on port 80.
+    #[serde(default = "default_ap_address")]
+    pub ap_address: String,
+
+    /// Path to the `wpa_supplicant` config the robot reads for station mode.
+    /// This is both the file we scan to decide whether a network is already
+    /// configured, and the file we write when the user submits credentials.
+    #[serde(default = "default_wpa_conf_path")]
+    pub wpa_conf_path: String,
+
+    /// Seconds to wait for the robot to associate and obtain a DHCP lease after
+    /// the user submits credentials, before declaring the attempt failed.
+    #[serde(default = "default_connect_timeout")]
+    pub connect_timeout_secs: u64,
+
+    /// Force the setup portal even when a network is already configured. Testing
+    /// aid only -- leave false in production.
+    #[serde(default)]
+    pub force_portal: bool,
+}
+
+fn default_wifi_interface() -> String {
+    "wlan0".to_string()
+}
+fn default_ap_ssid() -> String {
+    "Proscenic-Setup".to_string()
+}
+fn default_ap_channel() -> u8 {
+    6
+}
+fn default_ap_address() -> String {
+    "192.168.5.1".to_string()
+}
+fn default_wpa_conf_path() -> String {
+    "/etc/wifi/wpa_supplicant.conf".to_string()
+}
+fn default_connect_timeout() -> u64 {
+    25
+}
+
 /// Root configuration
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub device: DeviceConfig,
     pub network: NetworkConfig,
+
+    /// Optional WiFi provisioning (captive-portal setup AP). Absent/omitted means
+    /// disabled -- WiFi is left entirely to the OS, as before.
+    #[serde(default)]
+    pub wifi: Option<WifiConfig>,
 }
 
 /// Minimum heartbeat interval (hardware requirement)

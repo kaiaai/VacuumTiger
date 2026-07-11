@@ -68,6 +68,17 @@ fn main() -> Result<()> {
         config.device.device_type
     );
 
+    // WiFi provisioning (opt-in via [wifi]). If enabled and the robot has no
+    // configured network, this brings up a captive-portal setup AP and blocks
+    // until the user's network is joined. It is a no-op for already-provisioned
+    // robots, so existing deployments are unaffected. Errors are non-fatal: log
+    // and continue so a provisioning hiccup never blocks the daemon.
+    if let Some(wifi_cfg) = config.wifi.as_ref()
+        && let Err(e) = sangamio::wifi::provision_if_needed(wifi_cfg)
+    {
+        log::warn!("WiFi provisioning failed (continuing): {}", e);
+    }
+
     // Create device driver
     let mut driver = create_device(&config)?;
 
