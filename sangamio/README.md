@@ -1,6 +1,11 @@
 # SangamIO
 
-Hardware abstraction daemon for the CRL-200S robotic vacuum platform, providing real-time sensor streaming via UDP and command control via TCP.
+Hardware abstraction daemon for robotic vacuum platforms, providing real-time sensor streaming via UDP and command control via TCP.
+
+Supported hardware:
+
+- CRL-200S
+- Roborock S5 Max (rooted firmware `4.1.2_1668`)
 
 ## Overview
 
@@ -73,6 +78,13 @@ arm-linux-gnueabihf-strip \
   target/armv7-unknown-linux-musleabihf/release/sangam-io
 ```
 
+The Roborock S5 Max stock image uses glibc rather than musl:
+
+```bash
+rustup target add armv7-unknown-linux-gnueabihf
+cargo build --release --target armv7-unknown-linux-gnueabihf
+```
+
 ### Feature Flags
 
 | Feature | Description |
@@ -102,6 +114,10 @@ ssh root@vacuum "RUST_LOG=info /usr/sbin/sangamio"
 > **Important**: Always overwrite `/usr/sbin/sangamio` directly. The robot monitor auto-restarts processes, so renaming AuxCtrl prevents conflicts.
 
 ## Configuration
+
+For the Roborock S5 Max, start with `roborock-s5max.toml`. Actuation is
+disabled by default and live takeover must continue the stock MCU transmit
+sequence using `roborock_s5max_sequence`.
 
 Edit `sangamio.toml`:
 

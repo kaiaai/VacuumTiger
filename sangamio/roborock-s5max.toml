@@ -1,0 +1,23 @@
+# SangamIO configuration for a rooted Roborock S5 Max.
+#
+# Actuation remains disabled unless explicitly enabled below.
+
+[device]
+type = "roborock_s5max"
+name = "Roborock S5 Max"
+
+[device.roborock_s5max]
+mcu_port = "/dev/ttyS2"
+lds_port = "/dev/ttyS1"
+lds_motor = "/dev/lds_motor"
+watchdog = "/dev/watchdog"
+wheel_mm_per_tick = 0.798
+wheel_track_m = 0.229
+lds_forward_angle_deg = 261.2
+allow_actuation = false
+# Required at runtime. Use 0 only when SangamIO owns the MCU from reset; a live
+# handoff must set the final sequence captured from the frozen stock sender.
+# last_stock_sequence = 0
+
+[network]
+bind_address = "0.0.0.0:5555"

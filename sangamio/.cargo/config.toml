@@ -6,3 +6,8 @@
 [target.armv7-unknown-linux-musleabihf]
 linker = "armv7-unknown-linux-musleabihf-gcc"
 rustflags = ["-C", "target-feature=+neon", "-C", "target-cpu=cortex-a7"]
+
+# Roborock S5 Max stock firmware uses glibc/gnueabihf, not musl.
+[target.armv7-unknown-linux-gnueabihf]
+linker = "arm-linux-gnueabihf-gcc"
+rustflags = ["-C", "target-feature=+neon", "-C", "target-cpu=cortex-a7"]
