@@ -85,6 +85,11 @@ rustup target add armv7-unknown-linux-gnueabihf
 cargo build --release --target armv7-unknown-linux-gnueabihf
 ```
 
+The S5 Max sequence helper is firmware-specific. Its current offset is for
+firmware `4.1.2_1668` and `libuart_api` Build ID
+`8d639ff160b8766b7bb87e848e9b0a9c0ff12a08`; re-derive the offset before using
+it with another firmware build.
+
 ### Feature Flags
 
 | Feature | Description |
@@ -113,11 +118,136 @@ ssh root@vacuum "RUST_LOG=info /usr/sbin/sangamio"
 
 > **Important**: Always overwrite `/usr/sbin/sangamio` directly. The robot monitor auto-restarts processes, so renaming AuxCtrl prevents conflicts.
 
+### Roborock S5 Max live takeover
+
+The S5 Max driver must exclusively own `/dev/ttyS2`, `/dev/ttyS1`,
+`/dev/lds_motor`, and `/dev/watchdog`. The stock `rr_loader` and `WatchDoge`
+processes therefore cannot run alongside SangamIO. The MCU also rejects stale
+transmit sequence numbers, so a live handoff must capture the last stock
+sequence while `rr_loader` is frozen.
+
+The procedure below was validated on rooted firmware `4.1.2_1668`. Keep a
+second terminal open. A forced reboot is the recovery path and restores the
+stock stack because the `/etc/inittab` override is a temporary bind mount.
+
+Build and upload the daemon, helper, and base configuration:
+
+```bash
+TARGET=armv7-unknown-linux-gnueabihf
+cargo build --release --target "$TARGET" \
+  --bin sangam-io --bin roborock_s5max_sequence
+scp -O \
+  "target/$TARGET/release/sangam-io" \
+  "target/$TARGET/release/roborock_s5max_sequence" \
+  roborock-s5max.toml root@vacuum:/mnt/data/
+```
+
+Then perform the handoff as root on the robot:
+
+```sh
+BIN=/mnt/data/sangam-io
+SEQ=/mnt/data/roborock_s5max_sequence
+BASE=/mnt/data/roborock-s5max.toml
+LIVE=/tmp/roborock-s5max-live.toml
+
+# Every exit after this point restores the stock stack by rebooting.
+recover()
+{
+  trap - EXIT HUP INT TERM
+  sync
+  /sbin/reboot -f
+}
+trap recover EXIT HUP INT TERM
+
+chmod 755 "$BIN" "$SEQ"
+WD_PIDS="$(pidof WatchDoge)"
+RR_PIDS="$(pidof rr_loader)"
+
+# Select the rr_loader instance that owns the MCU UART.
+RR_PID=""
+for pid in $RR_PIDS; do
+  for fd in /proc/$pid/fd/*; do
+    if [ "$(readlink "$fd" 2>/dev/null)" = /dev/ttyS2 ]; then
+      RR_PID="$pid"
+      break 2
+    fi
+  done
+done
+test -n "$WD_PIDS" && test -n "$RR_PID" || exit 1
+
+# Prevent init from immediately respawning WatchDoge during takeover.
+grep -v WatchDoge /etc/inittab > /tmp/inittab.no-watchdog
+mount --bind /tmp/inittab.no-watchdog /etc/inittab
+kill -HUP 1
+sleep 1
+
+# Freeze every process that can race the handoff, then read the sequence.
+kill -STOP $WD_PIDS $RR_PIDS
+kill -STOP $(pidof RoboController AppProxy 2>/dev/null) 2>/dev/null
+LAST_SEQUENCE="$($SEQ "$RR_PID")" || exit 1
+echo "Captured stock MCU sequence: $LAST_SEQUENCE"
+
+# Let TERM cleanup release the watchdog, UARTs, and LDS motor.
+kill -TERM $WD_PIDS $RR_PIDS
+kill -CONT $WD_PIDS $RR_PIDS
+sleep 2
+for pid in $WD_PIDS $RR_PIDS; do
+  kill -0 "$pid" 2>/dev/null && kill -KILL "$pid"
+done
+
+sed "s/^# last_stock_sequence = 0/last_stock_sequence = $LAST_SEQUENCE/" \
+  "$BASE" > "$LIVE"
+grep '^last_stock_sequence' "$LIVE" >/dev/null || exit 1
+RUST_LOG=info "$BIN" --config "$LIVE"
+```
+
+For the default read-only configuration, leave `allow_actuation = false`.
+This provides MCU telemetry only: starting the LDS requires charger and
+subsystem-control writes, so lidar remains disabled behind the actuation gate.
+Set `allow_actuation = true` only after reviewing the safety limits and only
+when a command client will control the robot.
+
+To stop SangamIO, send `SIGINT` from the second terminal. Its ordered shutdown
+stops wheels, cleaning motors, and the LDS; the shell's exit trap then reboots
+the robot and restores all stock processes:
+
+```sh
+kill -INT $(pidof sangam-io)
+```
+
+If the daemon or SSH session fails, use `/sbin/reboot -f` from the second
+terminal. If SSH is unavailable, the hardware watchdog should reboot the robot
+after its 16-second timeout. Do not try to restart only part of the stock stack
+after a takeover.
+
 ## Configuration
 
 For the Roborock S5 Max, start with `roborock-s5max.toml`. Actuation is
 disabled by default and live takeover must continue the stock MCU transmit
 sequence using `roborock_s5max_sequence`.
+
+The S5 Max publishes its detailed native values alongside the established
+`sensor_status` keys expected by Dhruva clients:
+
+| Common key | S5 Max source |
+|------------|---------------|
+| `wheel_left`, `wheel_right` | Low 16 bits of the signed 32-bit monotonic odometry counters; wrapping deltas remain valid |
+| `gyro_x`, `gyro_y`, `gyro_z` | MCU angular rates converted from rad/s to signed milliradians/s |
+| `bumper_left`, `bumper_right` | Conservative aliases: both become true when either raw bumper channel is active |
+| `cliff_left_side`, `cliff_left_front`, `cliff_right_front`, `cliff_right_side` | Conservative aliases: all become true when any raw cliff channel is active |
+| `battery_voltage`, `battery_level` | MCU BMS voltage and state-of-charge report |
+| `is_dock_connected`, `is_charging` | MCU dock-state report |
+| `dustbox_attached` | MCU dustbin presence report |
+
+The conservative bumper and cliff aliases avoid understating a safety event;
+their physical channel ordering has not yet been proven. Exact values remain
+available as `bumper_raw` and `cliff_raw`. Native signed wheel counters remain
+available as `wheel_left_ticks` and `wheel_right_ticks`.
+
+The `c0` drive command fields are mean encoder ticks per 20 ms and body yaw in
+radians per second. This was established from stock captures (forced turns use
+exactly `pi/2`, while the measured yaw rate settles near `1.57`) and exercised
+on hardware by the bounded wheel-deadman test and autonomous mapping runs.
 
 Edit `sangamio.toml`:
 
@@ -327,8 +457,8 @@ Commands use a unified `ComponentControl` interface:
 |-----------|--------|---------|-----------|
 | `drive` | Mode 0x02 | Stop + Mode 0x00 | `linear`, `angular` (m/s, rad/s) |
 | `vacuum` | 100% | 0% | `speed` (0-100%) |
-| `main_brush` | 100% | 0% | `speed` (0-100%) |
-| `side_brush` | 100% | 0% | `speed` (0-100%) |
+| `main_brush` | 100% (S5 Max: stock 71%) | 0% | `speed` (0-100%) |
+| `side_brush` | 100% (S5 Max: stock 30%) | 0% | `speed` (0-100%) |
 | `water_pump` | 100% | 0% | `speed` (0-100%) |
 | `lidar` | Power on | Power off | - |
 | `led` | - | - | `state` (0-18) |

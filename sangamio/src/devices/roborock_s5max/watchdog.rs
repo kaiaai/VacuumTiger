@@ -1,6 +1,7 @@
 //! Hardware watchdog ownership matching the stock WatchDoge contract.
 
 use super::lifecycle::Lifecycle;
+use super::sys::IoctlRequest;
 use crate::error::{Error, Result};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -13,8 +14,8 @@ use std::time::{Duration, Instant};
 
 const TIMEOUT_SECONDS: libc::c_int = 16;
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
-const WDIOC_KEEPALIVE: libc::Ioctl = 0x8004_5705u32 as libc::Ioctl;
-const WDIOC_SETTIMEOUT: libc::Ioctl = 0xc004_5706u32 as libc::Ioctl;
+const WDIOC_KEEPALIVE: IoctlRequest = 0x8004_5705u32 as IoctlRequest;
+const WDIOC_SETTIMEOUT: IoctlRequest = 0xc004_5706u32 as IoctlRequest;
 
 struct MagicCloseWatchdog(File);
 

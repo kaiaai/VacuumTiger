@@ -1,5 +1,6 @@
 //! Stop-only LDS motor ownership used by the safety lifecycle.
 
+use super::sys::IoctlRequest;
 use crate::error::{Error, Result};
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -10,11 +11,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-const LDS_MOTOR_SET_SPEED: libc::Ioctl = 0x4004_f810u32 as libc::Ioctl;
-pub(crate) const LDS_MOTOR_SET_CURRENT_SPEED: libc::Ioctl = 0x4004_f812u32 as libc::Ioctl;
-const LDS_MOTOR_START: libc::Ioctl = 0x4004_f813u32 as libc::Ioctl;
-const LDS_MOTOR_STOP: libc::Ioctl = 0x4004_f814u32 as libc::Ioctl;
-const LDS_MOTOR_SET_PRODUCT_ID: libc::Ioctl = 0x4004_f826u32 as libc::Ioctl;
+const LDS_MOTOR_SET_SPEED: IoctlRequest = 0x4004_f810u32 as IoctlRequest;
+pub(crate) const LDS_MOTOR_SET_CURRENT_SPEED: IoctlRequest = 0x4004_f812u32 as IoctlRequest;
+const LDS_MOTOR_START: IoctlRequest = 0x4004_f813u32 as IoctlRequest;
+const LDS_MOTOR_STOP: IoctlRequest = 0x4004_f814u32 as IoctlRequest;
+const LDS_MOTOR_SET_PRODUCT_ID: IoctlRequest = 0x4004_f826u32 as IoctlRequest;
 const TARGET_RPM_X100: libc::c_int = 30_000;
 const PRODUCT_ID: libc::c_int = 1;
 const START_VALUE: libc::c_int = 20_000;
@@ -43,7 +44,12 @@ impl LdsMotorGuard {
         })
     }
 
-    fn ioctl_value(&self, request: libc::Ioctl, value: libc::c_int, operation: &str) -> Result<()> {
+    fn ioctl_value(
+        &self,
+        request: IoctlRequest,
+        value: libc::c_int,
+        operation: &str,
+    ) -> Result<()> {
         let mut argument = value;
         if unsafe { libc::ioctl(self.file.as_raw_fd(), request, &mut argument) } < 0 {
             return Err(Error::Other(format!(

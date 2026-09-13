@@ -790,7 +790,7 @@ impl Frame {
             drop,
             bumper,
             dock,
-            cliff: cliff as u32,
+            cliff,
         })
     }
 

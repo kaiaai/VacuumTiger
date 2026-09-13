@@ -11,6 +11,7 @@ use super::lifecycle::{Lifecycle, SAFETY_REPORT_TIMEOUT};
 use super::packet::{FrameDecoder, ReportFooter};
 use super::safety::SafetyController;
 use super::sensors::SensorGroups;
+use super::sys::MCU_BAUD;
 use super::tty::ExclusiveTty;
 use crate::error::{Error, Result};
 use crossbeam_channel::{Receiver, Sender, bounded};
@@ -21,7 +22,6 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const MCU_BAUD: libc::speed_t = libc::B1152000;
 const MCU_BAUD_NUMBER: u32 = 1_152_000;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const ACK_TIMEOUT: Duration = Duration::from_millis(23);

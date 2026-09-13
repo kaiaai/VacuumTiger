@@ -26,6 +26,12 @@ fn little_u16(bytes: &[u8]) -> Option<u16> {
     Some(u16::from_le_bytes(bytes.get(..2)?.try_into().ok()?))
 }
 
+fn radians_per_second_to_milliradians(value: f32) -> i16 {
+    (value * 1000.0)
+        .round()
+        .clamp(i16::MIN as f32, i16::MAX as f32) as i16
+}
+
 fn update_group(
     group: &Arc<Mutex<SensorGroupData>>,
     update: impl FnOnce(&mut SensorGroupData),
@@ -127,6 +133,26 @@ impl SensorGroups {
                     "angular_velocity",
                     SensorValue::Vector3(state.imu.angular_rate),
                 );
+                // Common navigation clients consume signed milli-radians per
+                // second and convert them back with a 0.001 scale.
+                data.set(
+                    "gyro_x",
+                    SensorValue::I16(radians_per_second_to_milliradians(
+                        state.imu.angular_rate[0],
+                    )),
+                );
+                data.set(
+                    "gyro_y",
+                    SensorValue::I16(radians_per_second_to_milliradians(
+                        state.imu.angular_rate[1],
+                    )),
+                );
+                data.set(
+                    "gyro_z",
+                    SensorValue::I16(radians_per_second_to_milliradians(
+                        state.imu.angular_rate[2],
+                    )),
+                );
                 data.set("orientation_x", SensorValue::F32(state.imu.quaternion[0]));
                 data.set("orientation_y", SensorValue::F32(state.imu.quaternion[1]));
                 data.set("orientation_z", SensorValue::F32(state.imu.quaternion[2]));
@@ -138,6 +164,17 @@ impl SensorGroups {
                 data.set(
                     "wheel_right_ticks",
                     SensorValue::I32(state.right_odometry_ticks),
+                );
+                // Preserve the common CRL-200S sensor contract for existing
+                // navigation clients. Taking the low 16 bits is intentional:
+                // their wrapping subtraction preserves bounded tick deltas.
+                data.set(
+                    "wheel_left",
+                    SensorValue::U16(state.left_odometry_ticks as u16),
+                );
+                data.set(
+                    "wheel_right",
+                    SensorValue::U16(state.right_odometry_ticks as u16),
                 );
                 data.set(
                     "wheel_left_m",
@@ -189,6 +226,37 @@ impl SensorGroups {
                 for (name, value) in values {
                     data.set(name, value);
                 }
+
+                // The two bumper channels occupy the low bit of each byte,
+                // but their physical left/right order is not yet proven.
+                // Reporting any contact on both aliases is conservative and
+                // keeps existing collision handling safe.
+                if let Some(value) = frame
+                    .report(BUMPER_REPORT)
+                    .and_then(|report| little_u16(report.data))
+                {
+                    let any = value & 0x0101 != 0;
+                    data.set("bumper_left", SensorValue::Bool(any));
+                    data.set("bumper_right", SensorValue::Bool(any));
+                }
+
+                // Four cliff channels occupy the low bit of four nibbles.
+                // Until their physical ordering is confirmed, expose any
+                // active channel on every directional compatibility alias.
+                if let Some(value) = frame
+                    .report(CLIFF_REPORT)
+                    .and_then(|report| little_u16(report.data))
+                {
+                    let any = value & 0x1111 != 0;
+                    for name in [
+                        "cliff_left_side",
+                        "cliff_left_front",
+                        "cliff_right_front",
+                        "cliff_right_side",
+                    ] {
+                        data.set(name, SensorValue::Bool(any));
+                    }
+                }
             });
         }
 
@@ -216,6 +284,11 @@ impl SensorGroups {
                     data.set("mop_detection_supported", SensorValue::Bool(false));
                 }
             });
+            if let Some(value) = dustbin {
+                update_group(&self.sensor_status, |data| {
+                    data.set("dustbox_attached", SensorValue::Bool(value & 1 == 0));
+                });
+            }
         }
     }
 
@@ -263,6 +336,24 @@ impl SensorGroups {
                     "battery_capacity_mah",
                     SensorValue::U16(report.stock_scaled_value()),
                 );
+            }
+        });
+        // Mirror the established navigation-facing keys into sensor_status;
+        // raw and higher-resolution values remain available in power_status.
+        update_group(&self.sensor_status, |data| {
+            if let Some(battery) = battery {
+                data.set(
+                    "battery_voltage",
+                    SensorValue::F32(battery.voltage_mv as f32 / 1000.0),
+                );
+                data.set(
+                    "battery_level",
+                    SensorValue::U8(battery.state_of_charge_percent),
+                );
+            }
+            if let Some(value) = dock {
+                data.set("is_dock_connected", SensorValue::Bool(value != 0));
+                data.set("is_charging", SensorValue::Bool(value == 1));
             }
         });
     }
@@ -449,6 +540,13 @@ mod tests {
         *value
     }
 
+    fn bytes(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).unwrap())
+            .collect()
+    }
+
     #[test]
     fn publishes_calibration_metadata() {
         let (groups, _) = SensorGroups::create(0.798, 0.229, 261.2);
@@ -492,17 +590,47 @@ mod tests {
     }
 
     #[test]
+    fn publishes_navigation_compatibility_aliases() {
+        let moving = bytes(
+            "aa5c010740989d853d755710bf326c22416889f43bfd6b943cf8b18bbc865f753cf07d95bcf88ca2bded1e7fbfc4000000f0000000c3cfe14000000000e06e130200000000510888007400433f00005206ffff6501004b42026d00d0020015b4",
+        );
+        let frame = FrameDecoder::new().push(&moving).pop().unwrap();
+        let (groups, _) = SensorGroups::create(0.798, 0.229, 261.2);
+        groups.process_mcu_frame(&frame);
+        {
+            let data = groups.sensor_status.lock().unwrap();
+            assert!(matches!(
+                data.values.get("wheel_left"),
+                Some(SensorValue::U16(196))
+            ));
+            assert!(matches!(
+                data.values.get("wheel_right"),
+                Some(SensorValue::U16(240))
+            ));
+            assert!(matches!(
+                data.values.get("gyro_z"),
+                Some(SensorValue::I16(_))
+            ));
+        }
+
+        groups.process_mcu_frame(&report_frame(vec![
+            0x21, 0x02, 0x01, 0x00, // one bumper channel active
+            0x23, 0x02, 0x10, 0x00, // one cliff channel active
+            0x24, 0x02, 0x00, 0x00, // dustbin present
+        ]));
+        let data = groups.sensor_status.lock().unwrap();
+        assert!(bool_value(data.values.get("bumper_left")));
+        assert!(bool_value(data.values.get("bumper_right")));
+        assert!(bool_value(data.values.get("cliff_left_side")));
+        assert!(bool_value(data.values.get("cliff_left_front")));
+        assert!(bool_value(data.values.get("cliff_right_front")));
+        assert!(bool_value(data.values.get("cliff_right_side")));
+        assert!(bool_value(data.values.get("dustbox_attached")));
+    }
+
+    #[test]
     fn labels_bms_current_as_unsigned_magnitude() {
-        let input = (0.."aa1001080a06407300610000000000d002012776".len())
-            .step_by(2)
-            .map(|index| {
-                u8::from_str_radix(
-                    &"aa1001080a06407300610000000000d002012776"[index..index + 2],
-                    16,
-                )
-                .unwrap()
-            })
-            .collect::<Vec<_>>();
+        let input = bytes("aa1001080a06407300610000000000d002012776");
         let frame = FrameDecoder::new().push(&input).pop().unwrap();
         let (groups, _) = SensorGroups::create(0.798, 0.229, 261.2);
         groups.process_mcu_frame(&frame);
@@ -512,5 +640,16 @@ mod tests {
             Some(SensorValue::F32(value)) if (*value - 0.115).abs() < f32::EPSILON
         ));
         assert!(!data.values.contains_key("battery_current_a"));
+        drop(data);
+
+        let data = groups.sensor_status.lock().unwrap();
+        assert!(matches!(
+            data.values.get("battery_level"),
+            Some(SensorValue::U8(97))
+        ));
+        assert!(matches!(
+            data.values.get("battery_voltage"),
+            Some(SensorValue::F32(value)) if (*value - 16.390).abs() < f32::EPSILON
+        ));
     }
 }

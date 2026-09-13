@@ -81,7 +81,7 @@ impl LdsPacket {
 /// XV11's 15-bit rolling checksum over the first ten little-endian words.
 pub fn packet_checksum(bytes: &[u8; PACKET_LENGTH]) -> u16 {
     let mut accumulator = 0_u32;
-    for word in bytes[..20].chunks_exact(2) {
+    for word in bytes[..20].chunks(2) {
         accumulator = (accumulator << 1) + u16::from_le_bytes([word[0], word[1]]) as u32;
     }
     (((accumulator & 0x7fff) + (accumulator >> 15)) & 0x7fff) as u16

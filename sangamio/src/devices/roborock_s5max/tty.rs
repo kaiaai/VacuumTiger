@@ -1,5 +1,6 @@
 //! Exclusive raw-UART ownership for the S5 Max Linux target.
 
+use super::sys::IoctlRequest;
 use crate::error::{Error, Result};
 use std::fs::{self, File, OpenOptions};
 use std::io;
@@ -104,7 +105,7 @@ impl ExclusiveTty {
             .open(path)?;
         let fd = file.as_raw_fd();
 
-        if unsafe { libc::ioctl(fd, libc::TIOCEXCL as libc::Ioctl) } < 0 {
+        if unsafe { libc::ioctl(fd, libc::TIOCEXCL as IoctlRequest) } < 0 {
             return Err(Error::Other(format!(
                 "TIOCEXCL {path}: {}",
                 io::Error::last_os_error()
@@ -269,7 +270,7 @@ impl Drop for ExclusiveTty {
         if let Some(file) = &self.file {
             let fd = file.as_raw_fd();
             let _ = unsafe { libc::tcsetattr(fd, libc::TCSANOW, &self.original) };
-            let _ = unsafe { libc::ioctl(fd, libc::TIOCNXCL as libc::Ioctl) };
+            let _ = unsafe { libc::ioctl(fd, libc::TIOCNXCL as IoctlRequest) };
         }
     }
 }

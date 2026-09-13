@@ -14,6 +14,7 @@ mod mcu;
 pub mod packet;
 mod safety;
 mod sensors;
+mod sys;
 mod tty;
 mod watchdog;
 
@@ -329,6 +330,9 @@ impl RoborockS5MaxDriver {
                             "drive exceeds S5 Max limits (0.30 m/s, 1.60 rad/s)".to_string(),
                         ));
                     }
+                    // Stock c0 captures use encoder ticks/20 ms for the linear
+                    // field and rad/s for yaw: a commanded pi/2 turn settles
+                    // near 1.57 on the MCU's yaw-rate report.
                     let ticks_per_20ms = linear * 20.0 / hardware.wheel_mm_per_tick;
                     self.execute_actuator(
                         ActuatorCommand::Drive {

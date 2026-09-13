@@ -10,6 +10,10 @@ use std::io::{Read, Seek, SeekFrom};
 use std::process::ExitCode;
 
 const LIBRARY_NAME: &str = "libuart_api";
+// Offset of g_stRuaUartInfo's transmit sequence in the libuart_api build from
+// Roborock firmware 4.1.2_1668 (Build ID
+// 8d639ff160b8766b7bb87e848e9b0a9c0ff12a08). Re-derive this offset before
+// using the handoff helper with any other firmware/library build.
 const SEQUENCE_OFFSET: u64 = 0x2ff4d;
 
 fn run() -> Result<u8, String> {
