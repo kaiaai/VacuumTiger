@@ -305,7 +305,7 @@ impl LidarMountingConfig {
 // Hardware Configuration
 // ============================================================================
 
-/// Hardware configuration for device drivers
+/// CRL-200S hardware configuration.
 ///
 /// Specifies serial port paths and timing parameters for hardware communication.
 #[derive(Debug, Clone, Deserialize)]
@@ -403,6 +403,96 @@ fn default_angular_velocity_scale() -> f32 {
     523.0
 }
 
+/// Roborock S5 Max hardware configuration.
+///
+/// Defaults match firmware 4.1.2_1668 and the measured robot calibration.
+/// Physical values remain configurable for manufacturing and wear variation.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RoborockS5MaxHardwareConfig {
+    /// Main MCU UART (`1,152,000` baud, 8N1).
+    #[serde(default = "default_s5max_mcu_port")]
+    pub mcu_port: String,
+
+    /// LDS UART (`115,200` baud, 8N1).
+    #[serde(default = "default_s5max_lds_port")]
+    pub lds_port: String,
+
+    /// Kernel LDS motor-control device.
+    #[serde(default = "default_s5max_lds_motor")]
+    pub lds_motor: String,
+
+    /// Hardware watchdog device inherited from the stock stack.
+    #[serde(default = "default_s5max_watchdog")]
+    pub watchdog: String,
+
+    /// Linear distance represented by one wheel encoder tick, in millimetres.
+    #[serde(default = "default_s5max_wheel_mm_per_tick")]
+    pub wheel_mm_per_tick: f32,
+
+    /// Effective differential-drive wheel track, in metres.
+    #[serde(default = "default_s5max_wheel_track_m")]
+    pub wheel_track_m: f32,
+
+    /// Raw clockwise LDS angle corresponding to robot-forward, in degrees.
+    #[serde(default = "default_s5max_lds_forward_angle_deg")]
+    pub lds_forward_angle_deg: f32,
+
+    /// Permit commands that can energize motors or alter charging state.
+    #[serde(default)]
+    pub allow_actuation: bool,
+
+    /// Last AP transmit sequence used before this process takes ownership.
+    ///
+    /// Set this to zero only when SangamIO owns the MCU from a fresh boot.
+    /// A live stock-process handoff must supply the captured final sequence.
+    #[serde(default)]
+    pub last_stock_sequence: Option<u8>,
+}
+
+impl Default for RoborockS5MaxHardwareConfig {
+    fn default() -> Self {
+        Self {
+            mcu_port: default_s5max_mcu_port(),
+            lds_port: default_s5max_lds_port(),
+            lds_motor: default_s5max_lds_motor(),
+            watchdog: default_s5max_watchdog(),
+            wheel_mm_per_tick: default_s5max_wheel_mm_per_tick(),
+            wheel_track_m: default_s5max_wheel_track_m(),
+            lds_forward_angle_deg: default_s5max_lds_forward_angle_deg(),
+            allow_actuation: false,
+            last_stock_sequence: None,
+        }
+    }
+}
+
+fn default_s5max_mcu_port() -> String {
+    "/dev/ttyS2".to_string()
+}
+
+fn default_s5max_lds_port() -> String {
+    "/dev/ttyS1".to_string()
+}
+
+fn default_s5max_lds_motor() -> String {
+    "/dev/lds_motor".to_string()
+}
+
+fn default_s5max_watchdog() -> String {
+    "/dev/watchdog".to_string()
+}
+
+fn default_s5max_wheel_mm_per_tick() -> f32 {
+    0.798
+}
+
+fn default_s5max_wheel_track_m() -> f32 {
+    0.229
+}
+
+fn default_s5max_lds_forward_angle_deg() -> f32 {
+    261.2
+}
+
 /// Device configuration
 ///
 /// Describes the robot hardware and sensor specifications.
@@ -410,7 +500,8 @@ fn default_angular_velocity_scale() -> f32 {
 pub struct DeviceConfig {
     /// Device type identifier
     ///
-    /// **Valid values**: "crl200s", "mock" (mock requires --features mock)
+    /// **Valid values**: "crl200s", "roborock_s5max", "mock" (mock requires
+    /// `--features mock`)
     /// **Required**: Yes
     #[serde(rename = "type")]
     pub device_type: String,
@@ -427,6 +518,13 @@ pub struct DeviceConfig {
     /// **Optional**: For "mock" device type
     #[serde(default)]
     pub hardware: Option<HardwareConfig>,
+
+    /// Roborock S5 Max hardware configuration.
+    ///
+    /// **Required**: For "roborock_s5max" device type
+    /// **Ignored**: For other device types
+    #[serde(default)]
+    pub roborock_s5max: Option<RoborockS5MaxHardwareConfig>,
 
     /// Simulation configuration
     ///
@@ -516,11 +614,15 @@ impl Config {
         let config: Config = basic_toml::from_str(&content)
             .map_err(|e| Error::Config(format!("Failed to parse config: {}", e)))?;
 
-        // Device-specific validation
-        match config.device.device_type.as_str() {
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> Result<()> {
+        match self.device.device_type.as_str() {
             "crl200s" => {
                 // Hardware config is required for CRL-200S
-                let hardware = config.device.hardware.as_ref().ok_or_else(|| {
+                let hardware = self.device.hardware.as_ref().ok_or_else(|| {
                     Error::Config("crl200s device requires [device.hardware] section".to_string())
                 })?;
 
@@ -534,10 +636,49 @@ impl Config {
                     )));
                 }
             }
+            "roborock_s5max" => {
+                let hardware = self.device.roborock_s5max.as_ref().ok_or_else(|| {
+                    Error::Config(
+                        "roborock_s5max device requires [device.roborock_s5max] section"
+                            .to_string(),
+                    )
+                })?;
+
+                for (name, path) in [
+                    ("mcu_port", hardware.mcu_port.as_str()),
+                    ("lds_port", hardware.lds_port.as_str()),
+                    ("lds_motor", hardware.lds_motor.as_str()),
+                    ("watchdog", hardware.watchdog.as_str()),
+                ] {
+                    if path.trim().is_empty() {
+                        return Err(Error::Config(format!(
+                            "device.roborock_s5max.{name} must not be empty"
+                        )));
+                    }
+                }
+
+                if !hardware.wheel_mm_per_tick.is_finite() || hardware.wheel_mm_per_tick <= 0.0 {
+                    return Err(Error::Config(
+                        "device.roborock_s5max.wheel_mm_per_tick must be finite and positive"
+                            .to_string(),
+                    ));
+                }
+                if !hardware.wheel_track_m.is_finite() || hardware.wheel_track_m <= 0.0 {
+                    return Err(Error::Config(
+                        "device.roborock_s5max.wheel_track_m must be finite and positive"
+                            .to_string(),
+                    ));
+                }
+                if !hardware.lds_forward_angle_deg.is_finite() {
+                    return Err(Error::Config(
+                        "device.roborock_s5max.lds_forward_angle_deg must be finite".to_string(),
+                    ));
+                }
+            }
             #[cfg(feature = "mock")]
             "mock" => {
                 // Simulation config is required for mock device
-                let simulation = config.device.simulation.as_ref().ok_or_else(|| {
+                let simulation = self.device.simulation.as_ref().ok_or_else(|| {
                     Error::Config("mock device requires [device.simulation] section".to_string())
                 })?;
 
@@ -564,6 +705,107 @@ impl Config {
             }
         }
 
-        Ok(config)
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    fn parse(text: &str) -> Config {
+        basic_toml::from_str(text).unwrap()
+    }
+
+    const NETWORK: &str = r#"
+[network]
+bind_address = "127.0.0.1:5555"
+"#;
+
+    #[test]
+    fn s5max_section_uses_safe_measured_defaults() {
+        let config = parse(&format!(
+            r#"
+[device]
+type = "roborock_s5max"
+name = "S5 Max"
+
+[device.roborock_s5max]
+{NETWORK}
+"#
+        ));
+        config.validate().unwrap();
+
+        let hardware = config.device.roborock_s5max.unwrap();
+        assert_eq!(hardware.mcu_port, "/dev/ttyS2");
+        assert_eq!(hardware.lds_port, "/dev/ttyS1");
+        assert_eq!(hardware.lds_motor, "/dev/lds_motor");
+        assert_eq!(hardware.watchdog, "/dev/watchdog");
+        assert_eq!(hardware.wheel_mm_per_tick, 0.798);
+        assert_eq!(hardware.wheel_track_m, 0.229);
+        assert_eq!(hardware.lds_forward_angle_deg, 261.2);
+        assert!(!hardware.allow_actuation);
+        assert_eq!(hardware.last_stock_sequence, None);
+    }
+
+    #[test]
+    fn s5max_section_accepts_explicit_overrides() {
+        let config = parse(&format!(
+            r#"
+[device]
+type = "roborock_s5max"
+name = "S5 Max test fixture"
+
+[device.roborock_s5max]
+mcu_port = "/dev/test-mcu"
+lds_port = "/dev/test-lds"
+lds_motor = "/dev/test-lds-motor"
+watchdog = "/dev/test-watchdog"
+wheel_mm_per_tick = 0.8
+wheel_track_m = 0.23
+lds_forward_angle_deg = 270.0
+allow_actuation = true
+last_stock_sequence = 127
+{NETWORK}
+"#
+        ));
+        config.validate().unwrap();
+
+        let hardware = config.device.roborock_s5max.unwrap();
+        assert_eq!(hardware.mcu_port, "/dev/test-mcu");
+        assert_eq!(hardware.wheel_mm_per_tick, 0.8);
+        assert!(hardware.allow_actuation);
+        assert_eq!(hardware.last_stock_sequence, Some(127));
+    }
+
+    #[test]
+    fn s5max_requires_its_hardware_section() {
+        let config = parse(&format!(
+            r#"
+[device]
+type = "roborock_s5max"
+name = "S5 Max"
+{NETWORK}
+"#
+        ));
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("requires [device.roborock_s5max]"));
+    }
+
+    #[test]
+    fn s5max_rejects_unsafe_calibration_values() {
+        let config = parse(&format!(
+            r#"
+[device]
+type = "roborock_s5max"
+name = "S5 Max"
+
+[device.roborock_s5max]
+wheel_mm_per_tick = 0.0
+{NETWORK}
+"#
+        ));
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("wheel_mm_per_tick must be finite and positive"));
     }
 }
