@@ -66,7 +66,7 @@
 pub mod protocol;
 
 use crate::config::{AffineTransform1D, LidarMountingConfig};
-use crate::core::types::{SensorGroupData, SensorValue};
+use crate::core::types::{PACKED_SCAN_BINS, SensorGroupData, SensorValue, pack_scan};
 use crate::error::{Error, Result};
 use protocol::{Delta2DPacketReader, ParseResult};
 use serialport::SerialPort;
@@ -314,35 +314,12 @@ impl Delta2DDriver {
         log::info!("Delta-2D reader thread exiting");
     }
 
-    /// Publish the accumulated scan as a compact packed binary blob.
-    ///
-    /// Instead of inflating each point to protobuf floats (~14 bytes), the scan is
-    /// binned to a fixed grid and packed as raw native values. Wire layout
-    /// (little-endian, ~1082 bytes for 360 bins -- under one MTU, so a scan is
-    /// never IP-fragmented):
-    ///   u16 num_bins
-    ///   per bin: u16 distance (0.25mm units, 0 = no return), u8 quality
-    /// Bin i is angle `i * 2pi / num_bins` (ROS CCW, 0 = forward). The bridge
-    /// converts distance to meters (x0.00025) -- that and all position geometry
-    /// (now ROS TF) are done off the robot.
+    /// Publish the accumulated scan as a compact packed binary blob
+    /// (see [`pack_scan`] for the wire layout). The bridge converts distance
+    /// to meters -- that and all position geometry (now ROS TF) are done off
+    /// the robot.
     fn publish_scan(sensor_data: &Arc<Mutex<SensorGroupData>>, points: &[(f32, f32, u8)]) {
-        const NUM_BINS: usize = 360;
-        let mut dist = [0u16; NUM_BINS];
-        let mut qual = [0u8; NUM_BINS];
-        for &(angle, distance_m, quality) in points {
-            let bin = (angle / TAU * NUM_BINS as f32) as usize % NUM_BINS;
-            // meters -> raw 0.25mm units (the lidar's native resolution; no real loss)
-            let raw = (distance_m * 4000.0).round().clamp(0.0, u16::MAX as f32) as u16;
-            dist[bin] = raw;
-            qual[bin] = quality;
-        }
-
-        let mut buf = Vec::with_capacity(2 + NUM_BINS * 3);
-        buf.extend_from_slice(&(NUM_BINS as u16).to_le_bytes());
-        for i in 0..NUM_BINS {
-            buf.extend_from_slice(&dist[i].to_le_bytes());
-            buf.push(qual[i]);
-        }
+        let buf = pack_scan(points);
 
         let Ok(mut data) = sensor_data.lock() else {
             log::error!("Failed to lock sensor data for lidar scan");
@@ -351,7 +328,7 @@ impl Delta2DDriver {
         data.touch();
         data.set("scan_packed", SensorValue::Bytes(buf));
 
-        log::trace!("Published packed lidar scan ({} bins)", NUM_BINS);
+        log::trace!("Published packed lidar scan ({} bins)", PACKED_SCAN_BINS);
     }
 
     /// Shutdown the driver

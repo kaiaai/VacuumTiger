@@ -4,7 +4,7 @@ use super::lds::{LdsDecoder, LdsRevolution, LdsRevolutionAssembler};
 use super::lds_motor::LDS_MOTOR_SET_CURRENT_SPEED;
 use super::lifecycle::Lifecycle;
 use super::tty::ExclusiveTty;
-use crate::core::types::{SensorGroupData, SensorValue};
+use crate::core::types::{SensorGroupData, SensorValue, pack_scan};
 use crate::error::{Error, Result};
 use std::f32::consts::{PI, TAU};
 use std::fs::File;
@@ -182,11 +182,11 @@ fn publish_revolution(
         log::error!("S5 Max lidar sensor-group mutex poisoned");
         return;
     };
-    data.set("scan", SensorValue::PointCloud2D(points));
-    data.set(
-        "rotation_speed_rpm",
-        SensorValue::F32(revolution.mean_speed_rpm()),
-    );
+    // Same compact wire format as the CRL-200S Delta-2D (see `pack_scan`).
+    data.set("scan_packed", SensorValue::Bytes(pack_scan(&points)));
+    let rpm = revolution.mean_speed_rpm();
+    data.set("rpm", SensorValue::F32(rpm));
+    data.set("rotation_speed_rpm", SensorValue::F32(rpm));
     data.set(
         "invalid_samples",
         SensorValue::U16(revolution.invalid_sample_count() as u16),
@@ -227,12 +227,15 @@ mod tests {
         let data = Arc::new(Mutex::new(SensorGroupData::new("lidar")));
         publish_revolution(&data, &revolution, 261.2_f32.to_radians());
         let data = data.lock().unwrap();
-        let SensorValue::PointCloud2D(points) = data.values.get("scan").unwrap() else {
-            panic!("scan has unexpected type");
+        let SensorValue::Bytes(blob) = data.values.get("scan_packed").unwrap() else {
+            panic!("scan_packed has unexpected type");
         };
-        let expected = (261.2_f32 - (packet.index - INDEX_MIN) as f32 * 4.0).to_radians();
-        assert!((points[0].0 - expected).abs() < 1e-5);
-        assert!((points[0].1 - 3.967).abs() < 1e-6);
+        assert_eq!(u16::from_le_bytes([blob[0], blob[1]]), 360);
+        // The first sample lands in the bin of its body bearing, at 0.25 mm units.
+        let expected_deg = (261.2_f32 - (packet.index - INDEX_MIN) as f32 * 4.0).rem_euclid(360.0);
+        let offset = 2 + expected_deg as usize * 3;
+        let distance_raw = u16::from_le_bytes([blob[offset], blob[offset + 1]]);
+        assert_eq!(distance_raw, 3967 * 4);
     }
 
     #[test]

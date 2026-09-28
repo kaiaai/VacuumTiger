@@ -389,10 +389,31 @@ pub struct HardwareConfig {
     /// **Default**: false
     #[serde(default)]
     pub safe_start: bool,
+
+    /// Linear distance represented by one wheel encoder tick, in millimetres.
+    ///
+    /// Published in the `kinematics` sensor group so clients can convert
+    /// `wheel_left`/`wheel_right` ticks to metres.
+    /// **Default**: 1000 / 4464 (reference robot)
+    #[serde(default = "default_crl200s_wheel_mm_per_tick")]
+    pub wheel_mm_per_tick: f32,
+
+    /// Effective differential-drive wheel track, in metres.
+    /// **Default**: 0.233 (reference robot)
+    #[serde(default = "default_crl200s_wheel_track_m")]
+    pub wheel_track_m: f32,
 }
 
 fn default_lidar_pwm() -> u8 {
     60
+}
+
+fn default_crl200s_wheel_mm_per_tick() -> f32 {
+    1000.0 / 4464.0
+}
+
+fn default_crl200s_wheel_track_m() -> f32 {
+    0.233
 }
 
 fn default_linear_velocity_scale() -> f32 {

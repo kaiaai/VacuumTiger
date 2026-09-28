@@ -2,7 +2,9 @@
 
 use super::packet::{BRUSH_REPORT_MESSAGE, FAN_REPORT_MESSAGE, Frame, SWEEP_REPORT_MESSAGE};
 use crate::core::driver::DriverInitResult;
-use crate::core::types::{SensorGroupData, SensorValue, StreamSender, create_stream_channel};
+use crate::core::types::{
+    Kinematics, SensorGroupData, SensorValue, StreamSender, create_stream_channel,
+};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
@@ -89,7 +91,23 @@ impl SensorGroups {
             );
         });
 
+        // Static drive/IMU geometry for clients. `wheel_left`/`wheel_right`
+        // are the low 16 bits of the cumulative counters and `gyro_*` is in
+        // milli-rad/s (see process_mcu_frame). Accelerometer units are not yet
+        // established, so no accel scale is advertised.
+        let kinematics = Kinematics {
+            wheel_m_per_tick: wheel_mm_per_tick / 1000.0,
+            wheel_track_m,
+            wheel_tick_bits: 16,
+            gyro_rad_per_lsb: 0.001,
+            accel_mps2_per_lsb: None,
+        };
+
         let sensor_data = [
+            (
+                "kinematics",
+                Arc::new(Mutex::new(kinematics.to_sensor_group())),
+            ),
             ("sensor_status", Arc::clone(&sensor_status)),
             ("power_status", Arc::clone(&power_status)),
             ("attachments", Arc::clone(&attachments)),
