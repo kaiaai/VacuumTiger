@@ -330,8 +330,17 @@ See `proto/sangamio.proto` for the complete schema.
 | Topic | Rate | Size | Description |
 |-------|------|------|-------------|
 | `sensors/sensor_status` | 110Hz | ~150B | Encoders, IMU, bumpers, cliffs, battery |
-| `sensors/lidar` | 5Hz | ~2KB | 360° point cloud (angle, distance, quality) |
+| `sensors/lidar` | 5Hz | ~1.1KB | `scan_packed`: 360 bins of u16 distance (0.25 mm) + u8 quality |
 | `sensors/device_version` | Once | ~50B | Firmware version info |
+| `sensors/kinematics` | Every 2s | ~120B | Static drive/IMU geometry for clients (below) |
+
+Every driver publishes `kinematics` in SI units so clients such as
+[vacuum_ros2_bridge](https://github.com/remakeai/vacuum_ros2_bridge) need no
+per-robot constants: `wheel_m_per_tick`, `wheel_track_m`, `wheel_tick_bits`
+(the `wheel_left`/`wheel_right` counters wrap at 2^bits), `gyro_rad_per_lsb`
+(for `gyro_x/y/z`) and, when known, `accel_mps2_per_lsb` (for `accel_x/y/z`).
+For the CRL-200S, `wheel_mm_per_tick` and `wheel_track_m` are
+`[device.hardware]` options (defaults 1000/4464 and 0.233).
 
 ### Commands (TCP)
 

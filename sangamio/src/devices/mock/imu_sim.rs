@@ -55,11 +55,11 @@ pub struct ImuSimulator {
 /// Scale factor: rad/s to raw gyro units
 /// Typical MPU6050 at ±2000°/s range: ~16.4 LSB/(°/s) = ~939 LSB/(rad/s)
 /// We use 1000 for round numbers
-const GYRO_SCALE: f32 = 1000.0;
+pub(crate) const GYRO_SCALE: f32 = 1000.0;
 
 /// Scale factor: g to raw accel units
 /// Typical MPU6050 at ±2g range: 16384 LSB/g
-const ACCEL_SCALE: f32 = 16384.0;
+pub(crate) const ACCEL_SCALE: f32 = 16384.0;
 
 /// Scale factor for tilt (same as accel, representing normalized gravity)
 const TILT_SCALE: f32 = 16384.0;
