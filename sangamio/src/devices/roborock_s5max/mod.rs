@@ -48,6 +48,7 @@ pub struct RoborockS5MaxDriver {
     safety: SafetyController,
     dock_state: Option<Arc<AtomicU16>>,
     restore_charging_on_shutdown: bool,
+    operational_subsystems_ready: bool,
     initialized: bool,
 }
 
@@ -71,6 +72,7 @@ impl RoborockS5MaxDriver {
             safety,
             dock_state: None,
             restore_charging_on_shutdown: false,
+            operational_subsystems_ready: false,
             initialized: false,
         })
     }
@@ -131,6 +133,7 @@ impl RoborockS5MaxDriver {
             first_error.get_or_insert(error);
         }
         self.initialized = false;
+        self.operational_subsystems_ready = false;
         self.safety.reset_targets();
 
         if let Some(error) = first_error {
@@ -243,6 +246,36 @@ impl RoborockS5MaxDriver {
         }
         self.wait_for_charging()?;
         self.restore_charging_on_shutdown = false;
+        self.operational_subsystems_ready = false;
+        Ok(())
+    }
+
+    fn prepare_operational_subsystems(&mut self) -> Result<()> {
+        let dock_state = self
+            .dock_state
+            .as_ref()
+            .map_or(u16::MAX, |state| state.load(Ordering::Acquire));
+        if dock_state != 0 || self.restore_charging_on_shutdown {
+            return Err(Error::Other(format!(
+                "S5 Max operational transition requires physical undock; dock_state={dock_state}"
+            )));
+        }
+        if self.operational_subsystems_ready {
+            return Ok(());
+        }
+
+        // A permanent replacement can take ownership before the stock stack
+        // has completed the normal undocked transition. Reproduce its
+        // discharge, wake, forced-stop, and subsystem-enable sequence before
+        // either wheels or the LDS motor become active.
+        self.execute_actuator(ActuatorCommand::Charger(false), false)?;
+        self.execute_actuator(ActuatorCommand::WakeMcu, false)?;
+        self.execute_actuator(ActuatorCommand::StopDrive, false)?;
+        for &subsystem in OPERATIONAL_SUBSYSTEMS {
+            self.execute_actuator(ActuatorCommand::EnableSubsystem(subsystem), false)?;
+        }
+        thread::sleep(Duration::from_millis(250));
+        self.operational_subsystems_ready = true;
         Ok(())
     }
 
@@ -263,33 +296,7 @@ impl RoborockS5MaxDriver {
         {
             return Ok(());
         }
-        let dock_state = self
-            .dock_state
-            .as_ref()
-            .map_or(u16::MAX, |state| state.load(Ordering::Acquire));
-        if dock_state != 0 || self.restore_charging_on_shutdown {
-            return Err(Error::Other(format!(
-                "S5 Max LDS start requires physical undock; dock_state={dock_state}"
-            )));
-        }
-        // A permanent replacement can take ownership before the stock stack
-        // has converted an undocked boot into the normal/discharge state. MCU
-        // telemetry remains available there, but the LDS power domain does not
-        // start. Reproduce the stock b7=0 discharge transition followed by its
-        // b0 `sys_md\0\x00` wake before touching the motor controller. The b7
-        // command is acknowledged synchronously; incoming mode confirmation is
-        // handled and acknowledged by the MCU session worker.
-        self.execute_actuator(ActuatorCommand::Charger(false), false)?;
-        self.execute_actuator(ActuatorCommand::WakeMcu, false)?;
-        self.execute_actuator(ActuatorCommand::StopDrive, false)?;
-        // Submit each acknowledged transition separately so the MCU worker can
-        // consume its ACK before the next subsystem record is sent.
-        for &subsystem in OPERATIONAL_SUBSYSTEMS {
-            self.execute_actuator(ActuatorCommand::EnableSubsystem(subsystem), false)?;
-        }
-        // Stock waits for the acknowledged operational subsystem transition
-        // before its laser worker starts the separate Linux motor controller.
-        thread::sleep(Duration::from_millis(250));
+        self.prepare_operational_subsystems()?;
         let start_result = self
             .lds_motor
             .as_mut()
@@ -318,7 +325,6 @@ impl RoborockS5MaxDriver {
                     self.execute_actuator(ActuatorCommand::EmergencyStop, false)
                 }
                 ComponentAction::Configure { config } => {
-                    let hardware = self.config.roborock_s5max.as_ref().unwrap();
                     let linear = Self::drive_value(config, "linear")?;
                     let angular = Self::drive_value(config, "angular")?;
                     if !linear.is_finite()
@@ -330,16 +336,26 @@ impl RoborockS5MaxDriver {
                             "drive exceeds S5 Max limits (0.30 m/s, 1.60 rad/s)".to_string(),
                         ));
                     }
+                    let nonzero = linear != 0.0 || angular != 0.0;
+                    let (allow_actuation, wheel_mm_per_tick) = {
+                        let hardware = self.config.roborock_s5max.as_ref().unwrap();
+                        (hardware.allow_actuation, hardware.wheel_mm_per_tick)
+                    };
+                    if nonzero {
+                        self.safety
+                            .nonzero_allowed(allow_actuation, Instant::now())?;
+                        self.prepare_operational_subsystems()?;
+                    }
                     // Stock c0 captures use encoder ticks/20 ms for the linear
                     // field and rad/s for yaw: a commanded pi/2 turn settles
                     // near 1.57 on the MCU's yaw-rate report.
-                    let ticks_per_20ms = linear * 20.0 / hardware.wheel_mm_per_tick;
+                    let ticks_per_20ms = linear * 20.0 / wheel_mm_per_tick;
                     self.execute_actuator(
                         ActuatorCommand::Drive {
                             linear: ticks_per_20ms,
                             angular,
                         },
-                        linear != 0.0 || angular != 0.0,
+                        nonzero,
                     )
                 }
                 ComponentAction::Enable { .. } => Ok(()),
@@ -423,6 +439,7 @@ impl DeviceDriver for RoborockS5MaxDriver {
         self.lifecycle.begin_synchronizing()?;
 
         self.shutdown.store(false, Ordering::Release);
+        self.operational_subsystems_ready = false;
         let (sensors, mut result) = SensorGroups::create(
             hardware.wheel_mm_per_tick,
             hardware.wheel_track_m,
@@ -522,6 +539,19 @@ impl DeviceDriver for RoborockS5MaxDriver {
             return Err(error);
         }
         self.initialized = true;
+        let dock_state = self
+            .dock_state
+            .as_ref()
+            .map_or(u16::MAX, |state| state.load(Ordering::Acquire));
+        if hardware.allow_actuation
+            && dock_state == 0
+            && let Err(error) = self.prepare_operational_subsystems()
+        {
+            self.lifecycle
+                .fault(format!("operational subsystem startup: {error}"));
+            let _ = self.shutdown_all();
+            return Err(error);
+        }
         log::info!("Roborock S5 Max driver initialized: {}", self.config.name);
         Ok(result)
     }
