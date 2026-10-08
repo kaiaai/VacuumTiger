@@ -93,14 +93,15 @@ impl SensorGroups {
 
         // Static drive/IMU geometry for clients. `wheel_left`/`wheel_right`
         // are the low 16 bits of the cumulative counters and `gyro_*` is in
-        // milli-rad/s (see process_mcu_frame). Accelerometer units are not yet
-        // established, so no accel scale is advertised.
+        // milli-rad/s (see process_mcu_frame). The MCU reports acceleration as
+        // IEEE-754 values in m/s², so the scalar compatibility aliases need no
+        // additional conversion.
         let kinematics = Kinematics {
             wheel_m_per_tick: wheel_mm_per_tick / 1000.0,
             wheel_track_m,
             wheel_tick_bits: 16,
             gyro_rad_per_lsb: 0.001,
-            accel_mps2_per_lsb: None,
+            accel_mps2_per_lsb: Some(1.0),
         };
 
         let sensor_data = [
@@ -147,6 +148,9 @@ impl SensorGroups {
         if let Some(state) = frame.state_report()
             && let Some(snapshot) = update_group(&self.sensor_status, |data| {
                 data.set("acceleration", SensorValue::Vector3(state.imu.acceleration));
+                data.set("accel_x", SensorValue::F32(state.imu.acceleration[0]));
+                data.set("accel_y", SensorValue::F32(state.imu.acceleration[1]));
+                data.set("accel_z", SensorValue::F32(state.imu.acceleration[2]));
                 data.set(
                     "angular_velocity",
                     SensorValue::Vector3(state.imu.angular_rate),
@@ -567,7 +571,7 @@ mod tests {
 
     #[test]
     fn publishes_calibration_metadata() {
-        let (groups, _) = SensorGroups::create(0.798, 0.229, 261.2);
+        let (groups, result) = SensorGroups::create(0.798, 0.229, 261.2);
         let data = groups.device_version.lock().unwrap();
         assert!(matches!(
             data.values.get("wheel_mm_per_tick"),
@@ -580,6 +584,13 @@ mod tests {
         assert!(matches!(
             data.values.get("lds_forward_angle_deg"),
             Some(SensorValue::F32(value)) if (*value - 261.2).abs() < f32::EPSILON
+        ));
+        drop(data);
+
+        let kinematics = result.sensor_data["kinematics"].lock().unwrap();
+        assert!(matches!(
+            kinematics.values.get("accel_mps2_per_lsb"),
+            Some(SensorValue::F32(value)) if (*value - 1.0).abs() < f32::EPSILON
         ));
     }
 
@@ -613,6 +624,7 @@ mod tests {
             "aa5c010740989d853d755710bf326c22416889f43bfd6b943cf8b18bbc865f753cf07d95bcf88ca2bded1e7fbfc4000000f0000000c3cfe14000000000e06e130200000000510888007400433f00005206ffff6501004b42026d00d0020015b4",
         );
         let frame = FrameDecoder::new().push(&moving).pop().unwrap();
+        let expected_acceleration = frame.state_report().unwrap().imu.acceleration;
         let (groups, _) = SensorGroups::create(0.798, 0.229, 261.2);
         groups.process_mcu_frame(&frame);
         {
@@ -629,6 +641,15 @@ mod tests {
                 data.values.get("gyro_z"),
                 Some(SensorValue::I16(_))
             ));
+            for (key, expected) in ["accel_x", "accel_y", "accel_z"]
+                .into_iter()
+                .zip(expected_acceleration)
+            {
+                assert!(matches!(
+                    data.values.get(key),
+                    Some(SensorValue::F32(value)) if (*value - expected).abs() < f32::EPSILON
+                ));
+            }
         }
 
         groups.process_mcu_frame(&report_frame(vec![
