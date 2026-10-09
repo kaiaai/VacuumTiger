@@ -102,8 +102,8 @@ Record `0x07/len0x40` uses this layout. Offsets include the two-byte record head
 |-------:|---------:|----------|-------------------------------------------|
 |      0 |        1 | `u8`     | Record ID `0x07`                          |
 |      1 |        1 | `u8`     | Body length `0x40`                        |
-|      2 |       12 | `f32[3]` | Acceleration                              |
-|     14 |       12 | `f32[3]` | Angular rate                              |
+|      2 |       12 | `f32[3]` | Acceleration in m/s²                      |
+|     14 |       12 | `f32[3]` | Angular rate in rad/s                     |
 |     26 |       16 | `f32[4]` | Quaternion `(x, y, z, w)`                 |
 |     42 |        4 | `i32`    | Left cumulative wheel ticks               |
 |     46 |        4 | `i32`    | Right cumulative wheel ticks              |

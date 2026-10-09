@@ -33,6 +33,28 @@ const ACK_DEDUP_WINDOW_FRAMES: u32 = 128;
 const COMMAND_QUEUE_CAPACITY: usize = 8;
 const COMMAND_TIMEOUT: Duration = Duration::from_millis(200);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DriveStep {
+    WakeMcu,
+    EnableWheels,
+    Velocity,
+}
+
+const START_DRIVE_STEPS: &[DriveStep] = &[
+    DriveStep::WakeMcu,
+    DriveStep::EnableWheels,
+    DriveStep::Velocity,
+];
+const REFRESH_DRIVE_STEPS: &[DriveStep] = &[DriveStep::Velocity];
+
+fn drive_steps(drive_active: bool, linear: f32, angular: f32) -> &'static [DriveStep] {
+    if (linear != 0.0 || angular != 0.0) && !drive_active {
+        START_DRIVE_STEPS
+    } else {
+        REFRESH_DRIVE_STEPS
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ActuatorCommand {
     WakeMcu,
@@ -321,7 +343,7 @@ impl McuDriver {
 struct McuSafetyGuard<'a> {
     tty: &'a ExclusiveTty,
     next_sequence: Cell<u8>,
-    wheel_subsystem_enabled: Cell<bool>,
+    drive_active: Cell<bool>,
     safety: SafetyController,
     command_acks: Arc<CommandAckTracker>,
     armed: bool,
@@ -337,7 +359,7 @@ impl<'a> McuSafetyGuard<'a> {
         Self {
             tty,
             next_sequence: Cell::new(first_sequence),
-            wheel_subsystem_enabled: Cell::new(false),
+            drive_active: Cell::new(false),
             safety,
             command_acks,
             armed: true,
@@ -369,7 +391,9 @@ impl<'a> McuSafetyGuard<'a> {
     }
 
     fn forced_wheel_stop(&self) -> Result<()> {
-        self.send(wheel_command_frame(self.take_sequence(), 0.0, 0.0, true))
+        self.send(wheel_command_frame(self.take_sequence(), 0.0, 0.0, true))?;
+        self.drive_active.set(false);
+        Ok(())
     }
 
     fn execute(&self, command: ActuatorCommand) -> Result<Vec<u8>> {
@@ -384,31 +408,36 @@ impl<'a> McuSafetyGuard<'a> {
                     sequence,
                     subsystem_state_frame(sequence, subsystem, true),
                 )?);
-                if subsystem == WHEEL_ODOMETRY_SUBSYSTEM {
-                    self.wheel_subsystem_enabled.set(true);
-                }
             }
             ActuatorCommand::Drive { linear, angular } => {
-                if (linear != 0.0 || angular != 0.0) && !self.wheel_subsystem_enabled.get() {
-                    let sequence = self.take_sequence();
-                    acknowledgements.push(self.send_requiring_ack(
-                        sequence,
-                        subsystem_state_frame(sequence, WHEEL_ODOMETRY_SUBSYSTEM, true),
-                    )?);
-                    // The b1 selector enables the subsystem for the MCU session;
-                    // periodic c0 velocity refreshes must not resend it. Doing so
-                    // floods the acknowledgement window and eventually wraps the
-                    // one-byte transmit sequence.
-                    self.wheel_subsystem_enabled.set(true);
+                let nonzero = linear != 0.0 || angular != 0.0;
+                for step in drive_steps(self.drive_active.get(), linear, angular) {
+                    match step {
+                        // The MCU can return to idle while SangamIO retains UART
+                        // ownership. Wake it and restore the wheel prerequisite at
+                        // the start of each drive burst. Periodic c0 refreshes must
+                        // not repeat b0/b1 because b1 requires an acknowledgement.
+                        DriveStep::WakeMcu => {
+                            self.send(system_mode_command_frame(self.take_sequence(), 0))?;
+                        }
+                        DriveStep::EnableWheels => {
+                            let sequence = self.take_sequence();
+                            acknowledgements.push(self.send_requiring_ack(
+                                sequence,
+                                subsystem_state_frame(sequence, WHEEL_ODOMETRY_SUBSYSTEM, true),
+                            )?);
+                        }
+                        DriveStep::Velocity => self.send(wheel_command_frame(
+                            self.take_sequence(),
+                            linear,
+                            angular,
+                            false,
+                        ))?,
+                    }
                 }
-                self.send(wheel_command_frame(
-                    self.take_sequence(),
-                    linear,
-                    angular,
-                    false,
-                ))?;
                 self.safety
                     .arm_drive_lease(linear, angular, Instant::now())?;
+                self.drive_active.set(nonzero);
             }
             ActuatorCommand::StopDrive => {
                 self.forced_wheel_stop()?;
@@ -488,6 +517,7 @@ impl<'a> McuSafetyGuard<'a> {
                 failures.push(format!("{description}: {error}"));
             }
         }
+        self.drive_active.set(false);
         self.safety.reset_targets();
         if failures.is_empty() {
             Ok(())
@@ -765,8 +795,8 @@ fn guarded_session_loop(
 #[cfg(test)]
 mod tests {
     use super::{
-        ACK_TIMEOUT, AckRetryWindow, CommandAckTracker, RecentAckRequests,
-        contains_sensor_snapshot, notify_startup, ordered_stop_frames,
+        ACK_TIMEOUT, AckRetryWindow, CommandAckTracker, DriveStep, RecentAckRequests,
+        contains_sensor_snapshot, drive_steps, notify_startup, ordered_stop_frames,
     };
     use crate::devices::roborock_s5max::commands::{
         fan_command_frame, main_brush_command_frame, side_brush_command_frame,
@@ -775,6 +805,21 @@ mod tests {
     use crate::devices::roborock_s5max::packet::Frame;
     use crossbeam_channel::{TryRecvError, bounded};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn wakes_and_enables_wheels_once_per_drive_burst() {
+        let start = [
+            DriveStep::WakeMcu,
+            DriveStep::EnableWheels,
+            DriveStep::Velocity,
+        ];
+        let refresh = [DriveStep::Velocity];
+
+        assert_eq!(drive_steps(false, 1.0, 0.0), start);
+        assert_eq!(drive_steps(true, 1.0, 0.0), refresh);
+        assert_eq!(drive_steps(true, 0.0, 0.0), refresh);
+        assert_eq!(drive_steps(false, 0.0, 1.0), start);
+    }
 
     #[test]
     fn matches_command_acknowledgements_by_sequence() {
