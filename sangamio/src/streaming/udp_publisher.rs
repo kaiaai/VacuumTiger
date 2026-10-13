@@ -77,7 +77,7 @@ use std::io::Write;
 use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Shared handle to the current client's TCP socket (a write-clone), used to send
 /// telemetry when the client has fallen back to TCP. `None` when no client is
@@ -93,6 +93,11 @@ pub type UdpClientRegistry = Arc<Mutex<Option<SocketAddr>>>;
 /// Maximum expected UDP payload size (4-byte length prefix + protobuf message)
 /// Typical sensor message ~150 bytes, lidar ~2KB, allow headroom
 const MAX_UDP_BUFFER_SIZE: usize = 4096;
+
+/// Small, static groups resent periodically even when unchanged, so a client
+/// that reconnects (or lost the one datagram) still learns them.
+const REPUBLISHED_GROUPS: &[&str] = &["kinematics"];
+const REPUBLISH_INTERVAL: Duration = Duration::from_secs(2);
 
 /// UDP publisher that streams sensor data to registered clients
 pub struct UdpPublisher {
@@ -162,6 +167,7 @@ impl UdpPublisher {
         }
 
         let mut last_client: Option<SocketAddr> = None;
+        let mut last_republish = Instant::now();
 
         while self.running.load(Ordering::Relaxed) {
             // Get current registered client
@@ -174,6 +180,11 @@ impl UdpPublisher {
                     None => log::info!("UDP streaming paused (no client registered)"),
                 }
                 last_client = client_addr;
+                // Resend every polled group to a newly registered client, so it
+                // also gets groups that rarely change (kinematics, device_version).
+                for seq in last_seq.values_mut() {
+                    *seq = 0;
+                }
             }
 
             // Skip sending if no client registered
@@ -182,6 +193,15 @@ impl UdpPublisher {
                 std::thread::sleep(Duration::from_millis(10));
                 continue;
             };
+
+            if last_republish.elapsed() >= REPUBLISH_INTERVAL {
+                for group_id in REPUBLISHED_GROUPS {
+                    if let Some(seq) = last_seq.get_mut(*group_id) {
+                        *seq = 0;
+                    }
+                }
+                last_republish = Instant::now();
+            }
 
             let mut sent_any = false;
 

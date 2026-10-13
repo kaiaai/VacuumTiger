@@ -33,7 +33,7 @@ pub mod revo_lds;
 
 use crate::config::DeviceConfig;
 use crate::core::driver::{DeviceDriver, DriverInitResult};
-use crate::core::types::{Command, SensorGroupData, create_stream_channel};
+use crate::core::types::{Command, Kinematics, SensorGroupData, create_stream_channel};
 use crate::error::Result;
 use delta2d::Delta2DDriver;
 use gd32::GD32Driver;
@@ -102,6 +102,22 @@ impl DeviceDriver for CRL200SDriver {
         let version_data = Arc::new(Mutex::new(device_version));
         sensor_data.insert("device_version".to_string(), version_data.clone());
         log::debug!("Created sensor group 'device_version' (GD32 firmware version)");
+
+        // Static drive/IMU geometry so clients need no CRL-200S constants.
+        // Gyro: the GD32 reports ~0.01 deg/s per count -- 0.01025 calibrated in
+        // dhruva-slam (eskf.rs), 0.0101 measured on a Proscenic M6 Pro spin.
+        // Accel: assumed 2 g over i16 (not yet verified).
+        let kinematics = Kinematics {
+            wheel_m_per_tick: hardware.wheel_mm_per_tick / 1000.0,
+            wheel_track_m: hardware.wheel_track_m,
+            wheel_tick_bits: 16,
+            gyro_rad_per_lsb: 0.01025_f32.to_radians(),
+            accel_mps2_per_lsb: Some(2.0 * 9.81 / 32768.0),
+        };
+        sensor_data.insert(
+            "kinematics".to_string(),
+            Arc::new(Mutex::new(kinematics.to_sensor_group())),
+        );
 
         // Create lidar sensor group (5Hz scan data from Revo LDS)
         // Contains: scan (PointCloud2D), rpm (F32)

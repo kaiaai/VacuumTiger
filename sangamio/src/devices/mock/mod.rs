@@ -135,7 +135,7 @@ pub mod sensor_sim;
 
 use crate::config::DeviceConfig;
 use crate::core::driver::{DeviceDriver, DriverInitResult};
-use crate::core::types::{Command, SensorGroupData, SensorValue};
+use crate::core::types::{Command, Kinematics, SensorGroupData, SensorValue};
 use crate::error::{Error, Result};
 
 use config::SimulationConfig;
@@ -319,6 +319,17 @@ impl DeviceDriver for MockDriver {
         sensor_data.insert("sensor_status".to_string(), sensor_status);
         sensor_data.insert("lidar".to_string(), lidar_data);
         sensor_data.insert("device_version".to_string(), version_data);
+        let kinematics = Kinematics {
+            wheel_m_per_tick: 1.0 / self.config.robot.ticks_per_meter,
+            wheel_track_m: self.config.robot.wheel_base,
+            wheel_tick_bits: 16,
+            gyro_rad_per_lsb: 1.0 / imu_sim::GYRO_SCALE,
+            accel_mps2_per_lsb: Some(9.81 / imu_sim::ACCEL_SCALE),
+        };
+        sensor_data.insert(
+            "kinematics".to_string(),
+            Arc::new(Mutex::new(kinematics.to_sensor_group())),
+        );
 
         let mut stream_receivers = HashMap::new();
         stream_receivers.insert("sensor_status".to_string(), stream_rx);

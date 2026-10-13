@@ -76,6 +76,80 @@ impl SensorGroupData {
     }
 }
 
+/// Static drive and IMU geometry, published by every driver as the
+/// `kinematics` sensor group.
+///
+/// Clients (e.g. vacuum_ros2_bridge) turn the raw `wheel_left`/`wheel_right`
+/// ticks and `gyro_*`/`accel_*` counts in `sensor_status` into SI units with
+/// these values, so one client works for every robot without per-model
+/// constants. All values are SI.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Kinematics {
+    /// Wheel travel per encoder tick, in metres.
+    pub wheel_m_per_tick: f32,
+    /// Differential-drive wheel track (left-to-right wheel distance), in metres.
+    pub wheel_track_m: f32,
+    /// Width of the `wheel_left`/`wheel_right` counters; they wrap at `2^bits`.
+    pub wheel_tick_bits: u8,
+    /// Angular rate per `gyro_x/y/z` count, in rad/s.
+    pub gyro_rad_per_lsb: f32,
+    /// Acceleration per `accel_x/y/z` count, in m/s². `None` when the robot
+    /// does not publish scaled accelerometer counts.
+    pub accel_mps2_per_lsb: Option<f32>,
+}
+
+impl Kinematics {
+    /// Build the (touched, so it gets published) `kinematics` sensor group.
+    pub fn to_sensor_group(&self) -> SensorGroupData {
+        let mut data = SensorGroupData::new("kinematics");
+        data.set("wheel_m_per_tick", SensorValue::F32(self.wheel_m_per_tick));
+        data.set("wheel_track_m", SensorValue::F32(self.wheel_track_m));
+        data.set("wheel_tick_bits", SensorValue::U8(self.wheel_tick_bits));
+        data.set("gyro_rad_per_lsb", SensorValue::F32(self.gyro_rad_per_lsb));
+        if let Some(scale) = self.accel_mps2_per_lsb {
+            data.set("accel_mps2_per_lsb", SensorValue::F32(scale));
+        }
+        data.touch();
+        data
+    }
+}
+
+/// Number of angle bins in a packed LiDAR scan.
+pub const PACKED_SCAN_BINS: usize = 360;
+
+/// Pack a LiDAR scan into the compact `scan_packed` blob.
+///
+/// Instead of inflating each point to protobuf floats (~14 bytes), the scan is
+/// binned to a fixed grid and packed as raw native values. Wire layout
+/// (little-endian, ~1082 bytes for 360 bins -- under one MTU, so a scan is
+/// never IP-fragmented):
+///   u16 num_bins
+///   per bin: u16 distance (0.25mm units, 0 = no return), u8 quality
+/// Bin i is angle `i * 2pi / num_bins` (ROS CCW, 0 = forward). Input points are
+/// `(angle_rad, distance_m, quality)` with the angle already in that frame.
+/// The client converts distance to meters (x0.00025).
+pub fn pack_scan(points: &[(f32, f32, u8)]) -> Vec<u8> {
+    use std::f32::consts::TAU;
+
+    let mut dist = [0u16; PACKED_SCAN_BINS];
+    let mut qual = [0u8; PACKED_SCAN_BINS];
+    for &(angle, distance_m, quality) in points {
+        let bin = (angle / TAU * PACKED_SCAN_BINS as f32) as usize % PACKED_SCAN_BINS;
+        // meters -> raw 0.25mm units (the lidar's native resolution; no real loss)
+        let raw = (distance_m * 4000.0).round().clamp(0.0, u16::MAX as f32) as u16;
+        dist[bin] = raw;
+        qual[bin] = quality;
+    }
+
+    let mut buf = Vec::with_capacity(2 + PACKED_SCAN_BINS * 3);
+    buf.extend_from_slice(&(PACKED_SCAN_BINS as u16).to_le_bytes());
+    for i in 0..PACKED_SCAN_BINS {
+        buf.extend_from_slice(&dist[i].to_le_bytes());
+        buf.push(qual[i]);
+    }
+    buf
+}
+
 /// Actions that can be performed on components (sensors and actuators)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ComponentAction {
@@ -175,4 +249,43 @@ pub type StreamReceiver = Receiver<SensorGroupData>;
 /// If the publisher falls behind, oldest messages are dropped.
 pub fn create_stream_channel() -> (StreamSender, StreamReceiver) {
     crossbeam_channel::bounded(STREAM_CHANNEL_CAPACITY)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Kinematics, PACKED_SCAN_BINS, SensorValue, pack_scan};
+    use std::f32::consts::PI;
+
+    #[test]
+    fn pack_scan_bins_points_in_quarter_millimetres() {
+        let blob = pack_scan(&[(0.0, 1.0, 7), (PI / 2.0 + 0.001, 0.25, 9)]);
+        assert_eq!(blob.len(), 2 + PACKED_SCAN_BINS * 3);
+        assert_eq!(u16::from_le_bytes([blob[0], blob[1]]), 360);
+        let bin = |i: usize| {
+            let o = 2 + i * 3;
+            (u16::from_le_bytes([blob[o], blob[o + 1]]), blob[o + 2])
+        };
+        assert_eq!(bin(0), (4000, 7));
+        assert_eq!(bin(90), (1000, 9));
+        assert_eq!(bin(1), (0, 0));
+    }
+
+    #[test]
+    fn kinematics_group_is_touched_and_omits_unknown_accel() {
+        let group = Kinematics {
+            wheel_m_per_tick: 0.000798,
+            wheel_track_m: 0.229,
+            wheel_tick_bits: 16,
+            gyro_rad_per_lsb: 0.001,
+            accel_mps2_per_lsb: None,
+        }
+        .to_sensor_group();
+        assert_eq!(group.group_id, "kinematics");
+        assert_ne!(group.sequence_number, 0, "must be touched to be published");
+        assert!(matches!(
+            group.values["wheel_tick_bits"],
+            SensorValue::U8(16)
+        ));
+        assert!(!group.values.contains_key("accel_mps2_per_lsb"));
+    }
 }
