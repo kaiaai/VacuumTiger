@@ -99,25 +99,3 @@ bind_address = "0.0.0.0:5555"
 
 # UDP streaming uses the same port as TCP (extracted from bind_address)
 # When a TCP client connects, sensor data is streamed via UDP to client_ip:port
-
-# WiFi provisioning (optional; disabled unless enabled = true).
-#
-# When enabled AND the robot has no configured WiFi network (no network={...}
-# block in wpa_conf_path), SangamIO brings up a temporary "setup" access point
-# with a captive-portal web page so the user can enter their home SSID/password
-# from a phone -- replacing the ADB + wpa_supplicant.conf editing flow.
-#
-# It is a mode switch (AP for setup, station for normal use, never both) and is a
-# no-op for robots that already have a network configured, so enabling it will not
-# disturb an already-provisioned robot. Relies on the stock firmware's hostapd,
-# dnsmasq, wpa_supplicant and udhcpc. See docs/wifi-provisioning.md.
-#
-# [wifi]
-# enabled = true
-# interface = "wlan0"
-# ap_ssid = "Proscenic-Setup"      # a MAC suffix is appended, e.g. -9F3A
-# ap_password = ""                 # 8-63 chars for WPA2, or empty = open setup AP
-# ap_channel = 6
-# ap_address = "192.168.5.1"
-# wpa_conf_path = "/etc/wifi/wpa_supplicant.conf"
-# connect_timeout_secs = 25

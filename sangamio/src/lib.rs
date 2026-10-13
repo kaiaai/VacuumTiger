@@ -12,7 +12,6 @@ pub mod core;
 pub mod devices;
 pub mod error;
 pub mod streaming;
-pub mod wifi;
 
 // Re-export commonly used types
 pub use config::Config;
