@@ -104,12 +104,14 @@ impl DeviceDriver for CRL200SDriver {
         log::debug!("Created sensor group 'device_version' (GD32 firmware version)");
 
         // Static drive/IMU geometry so clients need no CRL-200S constants.
-        // Gyro: 2000 dps full scale over i16 (0.061 dps/LSB); accel: 2 g over i16.
+        // Gyro: the GD32 reports ~0.01 deg/s per count -- 0.01025 calibrated in
+        // dhruva-slam (eskf.rs), 0.0101 measured on a Proscenic M6 Pro spin.
+        // Accel: assumed 2 g over i16 (not yet verified).
         let kinematics = Kinematics {
             wheel_m_per_tick: hardware.wheel_mm_per_tick / 1000.0,
             wheel_track_m: hardware.wheel_track_m,
             wheel_tick_bits: 16,
-            gyro_rad_per_lsb: 0.061_f32.to_radians(),
+            gyro_rad_per_lsb: 0.01025_f32.to_radians(),
             accel_mps2_per_lsb: Some(2.0 * 9.81 / 32768.0),
         };
         sensor_data.insert(

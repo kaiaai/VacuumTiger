@@ -81,7 +81,8 @@ offset = 3.14159265    # π radians = 180° rotation for backward mount
 [device.hardware.frame_transforms.imu_gyro]
 x = [2, 1]    # output_x (roll) = input_z * 1
 y = [1, 1]    # output_y (pitch) = input_y * 1
-z = [0, -1]   # output_z (yaw) = input_x * -1 (sign flip)
+z = [0, 1]    # output_z (yaw) = input_x * 1 (CCW positive, REP-103; measured
+              # on a Proscenic M6 Pro spin -- other CRL-200S units may need -1)
 
 # IMU accelerometer axis remap (identity for CRL-200S)
 # [device.hardware.frame_transforms.imu_accel]
